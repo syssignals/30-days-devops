@@ -44,6 +44,8 @@ This article continues directly from Day 7. Your kind cluster, the NGINX Ingress
 If you finished Day 7 cleanly, run this sanity check before continuing:
 
 ```bash
+# -A   list pods across ALL namespaces
+# -E   enable extended regex so | means "or"
 kubectl get pods -A | grep -E "ingress-nginx|cert-manager|webapp"
 ```
 
@@ -65,8 +67,11 @@ If any of those are missing, jump back to Day 7 and rerun those install steps.
 | Docker | 24.x | `docker --version` |
 | kubectl | 1.29 | `kubectl version --client` |
 | Helm | 3.14 | `helm version --short` |
+| Docker Desktop / VM RAM | **6 GiB** (8 GiB recommended) | `docker info \| grep "Total Memory"` |
 
 No new CLIs needed today — everything we install runs inside the cluster.
+
+> **RAM precondition:** the stack we install today reserves roughly **1.5 GiB** across the cluster (Prometheus alone requests ~400 MiB, plus Grafana, Alertmanager, node-exporter on every node, kube-state-metrics, and the Operator). On a default 2 GiB Docker Desktop allocation the Prometheus Pod will hang in `Pending` indefinitely. Bump Docker Desktop → Settings → Resources → Memory to at least 6 GiB **before** running Part 1.
 
 ---
 
@@ -112,13 +117,15 @@ flowchart LR
 
 Read left to right. The whole observability story is a **pull-based pipeline** — Prometheus pulls metrics; nothing pushes to it.
 
-The **"Metrics sources"** block on the left (green boxes) is the set of components that already exist in your cluster and expose Prometheus-format metrics on an HTTP `/metrics` endpoint. The **kubelet** on each node has a built-in `cAdvisor` endpoint that exposes per-pod CPU, memory, and network counters — this is how Prometheus learns about your Day 7 webapp pods without you instrumenting them. **node-exporter** runs as a DaemonSet (one pod per node) and exposes host-level metrics (disk usage, system load, file-descriptor counts). **kube-state-metrics** is a single Deployment that watches the Kubernetes API and exposes Kubernetes object state as metrics (how many Pods are NotReady? how many Deployments have unavailable replicas?). The **kube-apiserver** itself exposes its internal metrics so you can monitor the control plane.
+The **"Metrics sources"** block on the left (green boxes) is the set of components that already exist in your cluster and expose Prometheus-format metrics on an HTTP `/metrics` endpoint. Your Day 7 webapp pods are intentionally not drawn as separate nodes — they're *measured by* the kubelet on whichever node runs them. From Prometheus's point of view, the only scrape target is the kubelet; the webapp pods are dimensions inside the metrics it returns (`{pod="webapp-webapp-x7k2p"}`). This is the magic: you don't have to instrument your app to get pod-level CPU/memory data.
+
+The **kubelet** on each node has a built-in `cAdvisor` endpoint that exposes per-pod CPU, memory, and network counters — that's how Prometheus learns about your webapp pods without you instrumenting them. **node-exporter** runs as a DaemonSet (one pod per node) and exposes host-level metrics (disk usage, system load, file-descriptor counts). **kube-state-metrics** is a single Deployment that watches the Kubernetes API and exposes Kubernetes object state as metrics (how many Pods are NotReady? how many Deployments have unavailable replicas?). The **kube-apiserver** itself exposes its internal metrics so you can monitor the control plane.
 
 The **Prometheus Server** (amber) is the center of the universe. It holds a list of scrape targets (populated automatically by the Prometheus Operator from `ServiceMonitor` resources you will see later), polls each target every 30 seconds by default, parses the metrics, and writes them to a time-series database on disk. It also evaluates alerting rules continuously — every `PrometheusRule` resource becomes a recurring PromQL expression.
 
 The **"Consumers"** block on the right is what you, the human, interact with. **Grafana** (blue) queries Prometheus with PromQL and renders dashboards. **Alertmanager** (red) receives fired alerts from Prometheus, deduplicates them (10 nodes firing the same `HighCPU` alert become one notification), and routes them to **destinations** (grey) like Slack, PagerDuty, email, or webhooks.
 
-The key insight: every component on the left exposes data the same way (`/metrics` over HTTP). The whole architecture scales because adding a new monitored service just means giving it a `/metrics` endpoint and a `ServiceMonitor` — Prometheus picks it up automatically.
+The key insight is right there in the four identical edge labels: every source exposes data the same way — a `/metrics` HTTP endpoint that Prometheus polls. That uniformity is what lets one Prometheus instance scrape kubelets, node-exporters, kube-state-metrics, and the API server using a single code path. We'll see in Part 2 how new scrape targets are added with a `ServiceMonitor` CRD — but the pull-over-HTTP shape stays the same.
 
 ---
 
@@ -135,13 +142,13 @@ Three reasons that matter:
 2. **Pre-built dashboards** — 30+ dashboards covering cluster overview, node detail, pod detail, deployment health, etc. — all imported automatically
 3. **Pre-built alerts** — a comprehensive set of `PrometheusRule` resources covering common failure modes (kube-apiserver down, node disk pressure, pod crash loop) — turned on by default
 
-Add the repo and update:
+Add the repo and update. `helm repo add` registers a Helm chart repository under a short local alias — once registered, you can install any chart from it via `<alias>/<chart>` (here `prometheus-community/kube-prometheus-stack`). `helm repo update` then refreshes the local chart index cache (`~/.cache/helm/`) so subsequent `helm install` calls resolve to the current chart version.
 
 ```bash
-# Add the prometheus-community Helm repository (the upstream source of the chart)
+# Register the upstream Helm repository under the local alias 'prometheus-community'
 helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
 
-# Pull the latest chart metadata into your local Helm cache
+# Fetch the latest chart index from every registered repo
 helm repo update
 ```
 
@@ -156,17 +163,42 @@ Update Complete. ⎈Happy Helming!⎈
 
 Now install the stack. We use a short release name (`kps`) because every Service the chart creates is prefixed with the release name — shorter is easier to type later:
 
+Each `--set key=value` overrides one value from the chart's default `values.yaml` — equivalent to writing a small custom values file. Five overrides below, each chosen deliberately:
+
 ```bash
-# Install kube-prometheus-stack into a dedicated 'monitoring' namespace.
-# - release name: kps (every Service/Deployment is prefixed with this)
-# - --version pins to a specific chart revision so the article is reproducible
-# - grafana.adminPassword: sets the initial admin password (defaults to random)
-# - grafana.service.type=ClusterIP: don't expose Grafana via NodePort; we'll
-#   use Ingress instead in Part 3 (same pattern as Day 7)
-# - prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false:
-#   makes Prometheus pick up *every* ServiceMonitor in any namespace (default
-#   would only pick up ones with a matching Helm label — too restrictive for
-#   a tutorial cluster)
+# release name: "kps"
+#   short alias; every Service/Deployment the chart creates is prefixed with
+#   this (kps-grafana, kps-kube-state-metrics, ...). Keep it short, you'll
+#   type these names later in Ingress backends and kubectl commands.
+#
+# --namespace monitoring --create-namespace:
+#   put the entire stack in a dedicated namespace. Three benefits:
+#   (a) one `kubectl delete namespace monitoring` wipes everything,
+#   (b) RBAC and NetworkPolicies can be scoped per-namespace later,
+#   (c) `kubectl get pods -n monitoring` shows only observability pods.
+#
+# --version 65.5.0:
+#   pin a specific chart revision. Without this you'd get whatever's latest
+#   when you run the command — could include breaking schema changes.
+#   Reproducible installs require version pins.
+#
+# --set grafana.adminPassword='admin':
+#   set the initial Grafana admin password. The chart's default is the
+#   string "prom-operator"; we set "admin" so the well-known admin/admin
+#   pattern works for the demo. ROTATE THIS FOR REAL DEPLOYMENTS.
+#
+# --set grafana.service.type=ClusterIP:
+#   the chart defaults to ClusterIP already, but we set it explicitly to
+#   show intent: we will NOT expose Grafana via NodePort or LoadBalancer.
+#   The Ingress in Part 3 is the only way in.
+#
+# --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false:
+#   controls behaviour when Prometheus's serviceMonitorSelector is nil.
+#   Setting "false" means a nil selector matches all ServiceMonitors
+#   (not just ones carrying the chart's release label). Combined with the
+#   chart's permissive namespace selector, the net effect is: this
+#   Prometheus picks up every ServiceMonitor cluster-wide — convenient
+#   for a tutorial where we don't want to think about label discipline.
 helm install kps prometheus-community/kube-prometheus-stack \
   --namespace monitoring --create-namespace \
   --version 65.5.0 \
@@ -194,6 +226,9 @@ on how to create & configure Alertmanager and Prometheus instances using the Ope
 This install pulls ~15 container images and creates ~50 Kubernetes resources. It takes about 2–4 minutes on a fresh kind cluster. Watch the pods come up:
 
 ```bash
+# -n monitoring   only the namespace we just created
+# -w              "watch": stream live updates as pods change state,
+#                 instead of running once. Press Ctrl+C to stop.
 kubectl get pods -n monitoring -w
 ```
 
@@ -212,6 +247,8 @@ prometheus-kps-kube-prometheus-stack-prometheus-0        2/2     Running   0    
 ```
 
 Press `Ctrl+C` to stop watching. Note the `2/2` and `3/3` containers — Prometheus, Alertmanager, and Grafana run with sidecar containers (config-reloaders, plugin loaders), which is normal.
+
+> The expected output above assumes the 3-node kind cluster from Day 5 — that's where the three `kps-prometheus-node-exporter-...` lines come from (DaemonSet, one Pod per node). If your cluster has a different node count you'll see a different number of node-exporter pods. Everything else is the same.
 
 ---
 
@@ -282,25 +319,41 @@ apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: grafana-ingress
+  # Must live in the same namespace as the backend Service (kps-grafana
+  # is in `monitoring`). The Ingress controller will NOT route across
+  # namespaces from this resource.
   namespace: monitoring
   annotations:
     # Reuse the self-signed ClusterIssuer from Day 7. cert-manager will see
-    # this annotation, create a Certificate resource for grafana.local, and
-    # populate the Secret named in tls.secretName below.
+    # this annotation, auto-create a Certificate resource for grafana.local,
+    # and populate the Secret named in tls.secretName below.
     cert-manager.io/cluster-issuer: selfsigned-issuer
 spec:
+  # ingressClassName: which Ingress Controller handles this rule. We
+  # installed NGINX in Day 7 with class "nginx", so this routes through
+  # that controller. If you had multiple controllers (e.g. nginx + Traefik),
+  # this annotation is how you pick.
   ingressClassName: nginx
   tls:
     - hosts:
         - grafana.local
+      # cert-manager will CREATE this Secret — it doesn't have to exist
+      # yet. The NGINX controller watches for Secrets named in any
+      # Ingress's tls block and starts serving HTTPS as soon as one appears.
       secretName: grafana-tls
   rules:
     - host: grafana.local
       http:
         paths:
           - path: /
+            # pathType: Prefix — match any URL starting with "/" (i.e.
+            # the whole site). Alternatives: Exact (only "/") or
+            # ImplementationSpecific (controller decides).
             pathType: Prefix
             backend:
+              # The Service to route matched traffic to. Helm-chart-named
+              # Services follow <release-name>-<component> — release "kps"
+              # + component "grafana" = "kps-grafana".
               service:
                 name: kps-grafana
                 port:
@@ -331,10 +384,22 @@ grafana-tls    True    grafana-tls    15s
 
 `READY: True` means the cert was issued by `selfsigned-issuer` and stored in the `grafana-tls` Secret. The NGINX controller is already watching this Secret and now serves HTTPS for `grafana.local`.
 
-Test it:
+Test it. The curl below uses five flags — each does something specific:
 
 ```bash
-curl --resolve grafana.local:443:127.0.0.1 -k -s -o /dev/null -w "%{http_code}\n" https://grafana.local/
+# --resolve grafana.local:443:127.0.0.1
+#     force curl to treat grafana.local as 127.0.0.1 for this one call,
+#     bypassing DNS. Useful because we haven't added /etc/hosts yet.
+# -k  (--insecure) skip TLS cert verification. Required because the cert
+#     is self-signed and won't chain to any trusted root CA.
+# -s  silent — no progress bar or transfer stats.
+# -o /dev/null
+#     discard the response body (we only care about the status code).
+# -w "%{http_code}\n"
+#     after the request, print the HTTP status code followed by a newline.
+curl --resolve grafana.local:443:127.0.0.1 -k -s \
+     -o /dev/null -w "%{http_code}\n" \
+     https://grafana.local/
 ```
 
 Expected output:
@@ -422,13 +487,44 @@ What this query says, decoded right-to-left:
 
 You should see two or three lines on the graph — one per running webapp pod. Set the panel title to `webapp · CPU cores`, then click **Apply**.
 
-Add three more panels in the same way:
+> **Counters vs gauges — a one-paragraph PromQL primer.** Prometheus metrics come in two shapes. **Counters** (always ending in `_total` — `container_cpu_usage_seconds_total`, `container_network_receive_bytes_total`, `kube_pod_container_status_restarts_total`) only ever go up; the *raw value* is meaningless, you always wrap them in `rate()` (per-second rate over a window) or `increase()` (count over a window). **Gauges** (like `container_memory_working_set_bytes`) represent a current value that can go up or down; you read them directly. The three panels below show one of each, in order.
 
-| Panel title | PromQL |
-|---|---|
-| `webapp · Memory (MiB)` | `sum by (pod) (container_memory_working_set_bytes{namespace="default",pod=~"webapp-webapp-.*",container!=""}) / 1024 / 1024` |
-| `webapp · Network RX (bytes/s)` | `sum by (pod) (rate(container_network_receive_bytes_total{namespace="default",pod=~"webapp-webapp-.*"}[5m]))` |
-| `webapp · Restarts (last 1h)` | `sum by (pod) (increase(kube_pod_container_status_restarts_total{namespace="default",pod=~"webapp-webapp-.*"}[1h]))` |
+**Panel 2: Memory (MiB)** — *a gauge*
+
+```promql
+sum by (pod) (container_memory_working_set_bytes{namespace="default",pod=~"webapp-webapp-.*",container!=""}) / 1024 / 1024
+```
+
+Decoded:
+- `container_memory_working_set_bytes` — the "active" memory the container is using (RSS minus reclaimable cache). This is what the kernel OOM-killer compares against the pod's memory limit. **Prefer it over `container_memory_usage_bytes`**, which includes page cache and overstates real usage.
+- `{namespace=..., pod=..., container!=""}` — same filter shape as the CPU query.
+- `sum by (pod)` — sum across containers in the pod (one line per pod).
+- `/ 1024 / 1024` — convert bytes to MiB for a readable axis.
+- **No `rate()`** because this is a gauge — we want the current value.
+
+**Panel 3: Network RX (bytes/s)** — *a counter wrapped in `rate()`*
+
+```promql
+sum by (pod) (rate(container_network_receive_bytes_total{namespace="default",pod=~"webapp-webapp-.*"}[5m]))
+```
+
+Decoded:
+- `container_network_receive_bytes_total` — cumulative bytes received on the pod's network interface. Note: no `container!=""` filter — networking is reported at the pod level (one veth pair per pod), not per container.
+- `rate(...[5m])` — per-second rate over a rolling 5-minute window. Same shape as the CPU query.
+- `sum by (pod)` — one line per pod.
+- The result unit is *bytes per second*. Grafana can auto-format the Y-axis to B/s, KB/s, MB/s.
+
+**Panel 4: Restarts (last 1h)** — *a counter wrapped in `increase()`*
+
+```promql
+sum by (pod) (increase(kube_pod_container_status_restarts_total{namespace="default",pod=~"webapp-webapp-.*"}[1h]))
+```
+
+Decoded:
+- `kube_pod_container_status_restarts_total` — counter of container restarts. Comes from **kube-state-metrics**, not cAdvisor (because it's a count of Kubernetes events, not container resource usage).
+- `increase(...[1h])` vs `rate(...)`: `increase` returns the **total count** of new restarts in the window (a whole number you can read directly). `rate` would give "restarts per second" — useless for a count of discrete events.
+- `sum by (pod)` — one line per pod.
+- **Rule of thumb:** use `increase()` for "how many events in a window", `rate()` for "how fast is it growing".
 
 Save the dashboard (top-right **Save** button) with the name `webapp`. You now have a one-pane view of every pod in the webapp release.
 
@@ -535,7 +631,7 @@ flowchart TB
 
     PROM["Prometheus Server\nreloads config\nadds the new rule\nevaluates expr every 30s"]:::prom
 
-    EVAL["Rule evaluation\nexpr returns 0 (no ready pods)\nfor 2 minutes consecutively"]:::eval
+    EVAL["Rule evaluation every 30s\nexpr returns empty -> Normal\nexpr returns a series -> Pending\nPending for 2m straight -> Firing"]:::eval
 
     AM["Alertmanager\ndedupes group routes\nemits notification"]:::am
 
@@ -563,11 +659,11 @@ At the top, you run `kubectl apply` (blue) and a `PrometheusRule` resource appea
 
 **Prometheus Server** (amber) reloads its config (it does this automatically when the mounted ConfigMap changes — no restart needed) and adds the new alerting rule to its in-memory rule engine. From then on, every 30 seconds (the rule's `interval`), Prometheus runs the `expr` PromQL query.
 
-**Rule evaluation** (amber) returns a value. If the value is empty (the condition isn't met), the alert stays in `Normal` state. If it returns a series (the condition IS met), the alert moves to `Pending`. After the `for:` duration elapses with continuous `Pending`, the alert transitions to `Firing` and Prometheus sends it to Alertmanager.
+**Rule evaluation** (amber) is the state machine. Every 30 seconds Prometheus runs the `expr` PromQL. With our rule (`kube_deployment_status_replicas_available == 0`): when at least one webapp replica is available, the metric is `2` (or whatever the replica count is), the `== 0` filter strips it out, and the result is empty — the alert stays `Normal`. When you scale to zero, the metric becomes `0`, the `== 0` filter keeps it, the result is a non-empty series — the alert transitions to `Pending`. If the `Pending` state persists for the full `for:` duration (we set 2 minutes), it flips to `Firing` and Prometheus sends it to Alertmanager.
 
 **Alertmanager** (red) is the notification gateway. It dedupes (10 nodes firing the same rule become one notification), groups related alerts together (all-from-cluster-A), throttles repeats, and routes the final notification to whichever receiver you configure — Slack, PagerDuty, email, a webhook.
 
-Meanwhile, **Grafana's Alert rules view** (blue) is reading state from Prometheus directly (the dotted arrow) — so you can see Pending and Firing states in the UI even before Alertmanager has sent anything.
+Meanwhile, **Grafana's Alert rules view** (blue) is configured by the chart to proxy through to Prometheus's `/api/v1/rules` endpoint (the dotted arrow) — so what you see in Grafana's Alerting UI IS Prometheus's current rule state, not a separate Grafana rule store. This is why you see `Pending` and `Firing` transitions in the UI even before Alertmanager has sent any notification.
 
 The key insight: the Operator + Prometheus + Alertmanager separation gives you three reload-without-restart boundaries. Adding a rule never restarts Prometheus. Changing routing never restarts Prometheus. Adding a receiver never restarts Alertmanager. Each layer has its own config-reload mechanism, and the Operator orchestrates them.
 
@@ -598,6 +694,11 @@ The Helm uninstall removes ~50 resources but leaves the CRDs in place (by Helm c
 > **Warning:** the command below deletes every `monitoring.coreos.com` CRD **cluster-wide**, not just the ones kps used. If you have any other Prometheus Operator installation in the same cluster, this will rip its CRDs out too — and Custom Resources tied to those CRDs will be cascaded-deleted. Only run this if you're sure no other monitoring stack is sharing the cluster.
 
 ```bash
+# A four-stage shell pipeline:
+#   kubectl get crd                  list every CRD in the cluster
+#   | grep monitoring.coreos.com     keep only the prom-operator family
+#   | awk '{print $1}'               keep just the first column (the CRD name)
+#   | xargs kubectl delete crd       pass each name as an arg to `kubectl delete crd`
 kubectl get crd | grep monitoring.coreos.com | awk '{print $1}' | xargs kubectl delete crd
 ```
 
@@ -610,7 +711,8 @@ kind delete cluster --name devops-cluster
 Remove the `/etc/hosts` entry you added for `grafana.local`:
 
 ```bash
-# Edit /etc/hosts and remove the line: 127.0.0.1 grafana.local
+# -i.bak           edit /etc/hosts in place, save the original as /etc/hosts.bak
+# '/grafana.local/d'  sed command: delete (d) any line matching /grafana.local/
 sudo sed -i.bak '/grafana.local/d' /etc/hosts
 ```
 
@@ -734,27 +836,29 @@ NET::ERR_CERT_AUTHORITY_INVALID
 
 ---
 
-### Error 6 — `kubectl scale` doesn't change the running pod count
+### Error 6 — `kubectl scale` is silently reverted by the next `helm upgrade`
 
 ```text
+# You scale down for the alert demo
 kubectl scale deployment webapp-webapp --replicas=0
-deployment.apps/webapp-webapp scaled
-# But pods are still running
+# Later you run any helm upgrade on the webapp release
+helm upgrade webapp ~/30-days-devops/day-06/webapp -f values-ingress.yaml
+# And replicas snap back to 2 (the chart's default) without warning
 ```
 
-**Cause:** Helm released `webapp-webapp` as a Deployment owned by the Helm release. Manually scaling it works, but the next time `helm upgrade` runs, it will reset replicas to the chart's value. For the alert-test exercise in Part 6 this is fine — just remember to scale back up after.
+**Cause:** Helm reconciles a Deployment's spec from the chart's rendered values, not from the cluster's current state. Any `kubectl scale` (or `kubectl edit`) is a divergence Helm will overwrite the next time you upgrade the release.
 
 **Fix:**
 
 ```bash
-# Confirm the manual scale took effect
-kubectl get deployment webapp-webapp
+# For TEMPORARY tests (like Part 6's alert demo), kubectl scale is fine:
+kubectl scale deployment webapp-webapp --replicas=0   # trigger
+kubectl scale deployment webapp-webapp --replicas=2   # restore
 
-# Scale back up to the chart's default replica count
-kubectl scale deployment webapp-webapp --replicas=2
-
-# For permanent changes: edit values-ingress.yaml from Day 7 (replicaCount)
-# and run `helm upgrade webapp ~/30-days-devops/day-06/webapp -f values-ingress.yaml`
+# For PERMANENT changes, edit values-ingress.yaml (set replicaCount: N)
+# and run helm upgrade — the values file becomes the source of truth:
+#   replicaCount: 4
+helm upgrade webapp ~/30-days-devops/day-06/webapp -f values-ingress.yaml
 ```
 
 ---
