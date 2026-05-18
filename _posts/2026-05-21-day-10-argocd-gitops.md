@@ -1188,4 +1188,4 @@ In Day 11 you will:
 - Watch Argo CD sync it — and watch the controller silently decrypt and materialise the real Secret inside the cluster
 - Understand **scope** (namespace-wide vs cluster-wide seals) and **rotation** (what happens when the controller key expires)
 
-[Day 11 coming soon →]
+[Day 11: Sealed Secrets — Encrypt Kubernetes Secrets for Safe Git Storage →](/articles/2026/05/22/day-11-sealed-secrets/)
