@@ -16,7 +16,7 @@ toc_label: "On this page"
 
 > **30 Days of DevOps** — Day 12 of 30. [← Day 11: Sealed Secrets](/articles/2026/05/22/day-11-sealed-secrets/)
 
-Every webapp Deployment so far has had a fixed `replicaCount` — 2 in dev, 4 in prod. That is the easiest thing to declare in a Helm chart, and the worst thing to run in production. At 3 AM your two pods are idle and you are paying for capacity you do not use. At 9 AM a marketing email lands, traffic spikes 10×, and those same two pods get CPU-throttled into latency hell before anyone notices. Fixed replicas are a compromise between two failure modes; they do not solve either one.
+Every webapp Deployment so far has been driven by a single static `replicaCount` in the chart values — set once, ignored thereafter. That is the easiest thing to declare in a Helm chart, and the worst thing to run in production. At 3 AM your two pods are idle and you are paying for capacity you do not use. At 9 AM a marketing email lands, traffic spikes 10×, and those same two pods get CPU-throttled into latency hell before anyone notices. Fixed replicas are a compromise between two failure modes; they do not solve either one.
 
 The **Horizontal Pod Autoscaler (HPA)** removes the compromise. You tell it the minimum and maximum number of replicas, plus a target metric — typically CPU utilisation — and it scales the Deployment up or down to keep that metric near the target. Idle at 3 AM? Two pods. 10× traffic at 9 AM? Six pods. The HPA control loop runs every 15 seconds; the response curve is in minutes, not in human-reaction time.
 
@@ -32,7 +32,7 @@ By the end of this article you will have:
 - A **k6 load Job** running inside the cluster that drives constant load against the webapp via the in-cluster Service DNS
 - A live demo of **scale-up**: `kubectl get hpa --watch` showing replicas climb from 2 → 6 within ~90 seconds of load starting
 - A live demo of **scale-down**: replicas falling back to 2 after the 5-minute stabilisation window
-- The **Prometheus Adapter** installed and exposing `nginx_ingress_controller_requests_per_second` as a Kubernetes custom metric — and an HPA scaling on that metric directly
+- The **Prometheus Adapter** installed, translating the Prometheus counter `nginx_ingress_controller_requests` into the Kubernetes custom metric `requests_per_second` — and an HPA scaling on that metric directly
 
 ---
 
@@ -59,7 +59,7 @@ flowchart LR
     PODS -->|"1 · scrape per-Pod usage"| KUBELET
     KUBELET -->|"2 · /metrics/resource"| METRICS
     METRICS -->|"3 · metrics.k8s.io API\nGET PodMetricsList"| HPA
-    HPA -->|"4 · ratio = currentCPU / targetCPU\n   if ratio ≠ 1, patch replicas"| DEP
+    HPA -->|"4 · desired = ceil(current × \n   currentCPU / targetCPU)\n   patch spec.replicas"| DEP
     DEP -->|"5 · ReplicaSet scales\nnew Pods created"| PODS
 
     classDef pod fill:#1d2d1d,stroke:#3fb950,color:#e6edf3
@@ -71,19 +71,21 @@ flowchart LR
 
 **Reading this diagram:**
 
-The loop has five numbered arrows. Read them in order, left to right.
+Five numbered arrows form a closed loop. Follow them in order — they describe one full HPA cycle.
 
-**Step 1.** The **webapp Pods** (green — the live workload being scaled) are scraped continuously by the **kubelet** running on each node. The kubelet uses an embedded cAdvisor to track CPU and memory consumption of every container on its node. This part of the loop is always running; it requires no installation.
+The diagram is split into two labelled groupings. The `kube-system` box on the left is the **metric data plane**: it collects and exposes raw usage numbers. The `kube-controller-manager` box on the right is the **scaling control plane**: it reads those numbers and decides what to do. Everything else — the webapp Pods (green, the live workload) and the Deployment (purple, the scaled resource) — sits outside both groupings.
 
-**Step 2.** The **metrics-server** (blue, inside `kube-system`) is a separate Deployment you must install — kind clusters do not ship with it. It scrapes the `/metrics/resource` endpoint of every kubelet every 15 seconds, aggregates the per-Pod numbers cluster-wide, and stores them in memory. Nothing is persisted; this is a short-term sample buffer feeding the HPA, not a monitoring system.
+**Arrow 1.** Each **kubelet** (grey — the always-on node agent) watches its local Pods through an embedded cAdvisor. The arrow points from the Pods to the kubelet because that is the direction the usage data flows: cgroup counters are sampled by the kubelet on the same node. No installation required.
 
-**Step 3.** The **HPA controller** (amber — the decision-maker) lives inside the kube-controller-manager. Every 15 seconds it issues a `GET PodMetricsList` against the `metrics.k8s.io` API and receives the current CPU/memory usage for the Pods matching the HPA's `scaleTargetRef`. The `metrics.k8s.io` API is served by metrics-server via an `APIService` registration — that is how the HPA reaches the metrics without a direct dependency on the metrics-server Deployment.
+**Arrow 2.** **metrics-server** (blue, in `kube-system`) is the new component you install in Part 1. Every 15 seconds it scrapes the `/metrics/resource` endpoint of every kubelet, aggregates the numbers cluster-wide, and holds them in memory. This is a short-term sample buffer feeding the HPA — it is not a monitoring system, and nothing is persisted to disk.
 
-**Step 4.** The controller computes the desired replica count using one formula: `desiredReplicas = ceil(currentReplicas × currentMetric / targetMetric)`. If your two pods are at 120 % of the 60 % CPU target, the ratio is 2.0, so desired = `ceil(2 × 2.0)` = 4. If the result differs from the current count, the controller patches the **Deployment** (purple — the resource HPA owns scaling for) `spec.replicas` field directly. Note that the HPA does *not* touch the Deployment template, only the replica count.
+**Arrow 3.** The **HPA controller** (amber — the decision-maker) lives inside kube-controller-manager. Every 15 seconds it issues `GET PodMetricsList` against the `metrics.k8s.io` API. That API is served by metrics-server through an `APIService` registration: from the HPA's point of view it is just calling the Kubernetes API, and the API server proxies the call to the metrics-server Pod behind the scenes.
 
-**Step 5.** The Deployment's existing controller takes over from there — it adjusts the ReplicaSet, which creates or terminates Pods. The cycle closes when the new Pods start reporting CPU usage, and the HPA recalculates on its next 15-second tick.
+**Arrow 4.** The controller computes a single number: `desiredReplicas = ceil(currentReplicas × currentCPU% / targetCPU%)`. Concrete example — current replicas = 2, current CPU usage = 120 % of request, target = 60 % of request. The ratio is 120 / 60 = 2.0, so desired = `ceil(2 × 2.0) = 4`. If `desired ≠ currentReplicas`, the controller patches `spec.replicas` on the **Deployment** (purple) directly. It does not touch any other field — not the Pod template, not the image, just the replica count.
 
-The two visual groupings — `kube-system` (the data plane) and `kube-controller-manager` (the control plane) — show that the metric collection and the scaling decision live in different parts of the cluster. This matters when you debug: if `kubectl top pods` works but the HPA reports `<unknown>`, the issue is between metrics-server and the controller; if `kubectl top` itself fails, the issue is upstream of metrics-server.
+**Arrow 5.** The Deployment controller takes over from here — it scales the ReplicaSet, which creates or terminates Pods. New Pods immediately start reporting CPU through arrows 1 → 2 → 3, which closes the loop. The next HPA reconcile (15 s later) sees the new usage and either holds steady or adjusts again.
+
+The split visual grouping is a debugging hint: if `kubectl top pods` works but the HPA shows `<unknown>` for its target, the break is **between** the two groupings — metrics-server is fine, but the HPA controller cannot reach the API. If `kubectl top pods` itself fails, the break is **inside** the left grouping — metrics-server is unhealthy.
 
 ---
 
@@ -639,17 +641,19 @@ flowchart LR
 
 **Reading this diagram:**
 
-Four numbered arrows trace the metric's journey from emission to autoscaling decision.
+Four numbered arrows trace one metric — the rate of HTTP requests through the ingress — from the moment it is emitted to the moment it changes the replica count. **All four arrows point in the direction the data flows**, not in the direction the request originates; that matters for arrows 2 and 3, where the puller (adapter, HPA) sits *downstream* of the data source.
 
-**Step 1.** The **NGINX Ingress controller** (grey, on the left — an existing component from Day 7 that already exposes Prometheus metrics) increments the counter `nginx_ingress_controller_requests` on every request it routes. The counter is labelled with `service`, `host`, and `status`, so we can filter to just the webapp's traffic.
+The `monitoring` namespace box groups the two infra pieces that live there together (Prometheus from Day 8; Prometheus Adapter from this part). The ingress controller (grey, peripheral) and the HPA controller (amber) sit outside the box — they live in their own namespaces and were already deployed in earlier days.
 
-**Step 2.** The **Prometheus** server from Day 8 (red, inside the `monitoring` namespace — the colour signals "the metrics warehouse, owns the data") scrapes the ingress controller's `/metrics` endpoint every 30 s, accumulating the counter over time. PromQL queries run against this in-memory time-series store.
+**Arrow 1.** The **NGINX Ingress controller** (grey) increments the counter `nginx_ingress_controller_requests` on every routed request. The counter carries labels `namespace`, `service`, `host`, `method`, and `status`, which is what lets us filter down to just webapp traffic later. Prometheus scrapes this counter via the controller's `/metrics` endpoint every 30 s — that scrape is the arrow.
 
-**Step 3.** The **Prometheus Adapter** (blue — a new component this section introduces) is a translation layer. It registers as the `APIService` for the `custom.metrics.k8s.io` API group, the same way metrics-server registers for `metrics.k8s.io`. When the HPA queries `custom.metrics.k8s.io/v1beta1/namespaces/default/services/webapp-webapp/requests_per_second`, the adapter resolves that path to a PromQL query against Prometheus, runs it, and returns the numeric result.
+**Arrow 2.** **Prometheus** (red — the "metrics warehouse" colour, signalling the durable store) holds the time series. Every 30 seconds the **Prometheus Adapter** (blue) issues a PromQL query against Prometheus and receives a numeric result. The arrow is drawn from Prometheus to the Adapter because the **result** flows that way — even though the *request* originates from the Adapter. (The same convention applies to arrow 3.) The PromQL expression is the `metricsQuery` in your adapter values file, evaluated with the adapter's label-overrides substituted in.
 
-**Step 4.** The **HPA controller** (amber — same component as before, but now reading from a different API group) treats custom metrics identically to CPU. It computes a ratio, decides on a desired replica count, and patches the **Deployment** (purple). To the HPA, the only difference is the API path it queries — the scaling logic is unchanged.
+**Arrow 3.** Every 15 seconds the **HPA controller** (amber) asks the API server for `custom.metrics.k8s.io/v1beta1/namespaces/default/services/webapp-webapp/requests_per_second`. The API server routes that request to the Adapter through an `APIService` registration — exactly the same mechanism metrics-server uses for CPU. The Adapter responds with whatever it last received from Prometheus, packaged as a `MetricValueList`. The arrow shows the response value flowing from Adapter to HPA.
 
-The architectural insight: by registering as an `APIService`, the adapter makes any PromQL expression look like a first-class Kubernetes metric. You can scale on p99 latency, queue depth, websocket connection count — anything Prometheus can compute.
+**Arrow 4.** The HPA treats this custom value identically to CPU: same `desired = ceil(current × actual / target)` formula, same patch against `spec.replicas` on the **Deployment** (purple). The only difference compared to Diagram 1 is which API group the value came from.
+
+The architectural insight: the `APIService` registration mechanism lets the Adapter make **any PromQL expression** look like a first-class Kubernetes metric. p99 latency, queue depth, websocket connections, business-domain counters — once Prometheus can compute it, the HPA can scale on it.
 
 ### 7.1 — Enable ingress-nginx Prometheus metrics
 
@@ -787,7 +791,7 @@ Expected output:
         "kind": "Service",
         "namespace": "default",
         "name": "webapp-webapp",
-        "apiVersion": "/v1"
+        "apiVersion": "v1"
       },
       "metricName": "requests_per_second",
       "timestamp": "2026-05-23T09:32:18Z",
@@ -863,8 +867,8 @@ kubectl get hpa -n default
 Expected output:
 
 ```text
-NAME            REFERENCE                  TARGETS                     MINPODS   MAXPODS   REPLICAS
-webapp-webapp   Deployment/webapp-webapp   487/200, 88%/60%            2         6         6
+NAME            REFERENCE                  TARGETS                     MINPODS   MAXPODS   REPLICAS   AGE
+webapp-webapp   Deployment/webapp-webapp   487/200, 88%/60%            2         6         6          12m
 ```
 
 Two `TARGETS` columns now — both contributing to the scaling decision. To revert to CPU-only and clean up:
@@ -882,8 +886,8 @@ argocd app sync webapp --server argocd.local --insecure
 **1. HPA shows `<unknown>/60%` for CPU target**
 
 ```text
-NAME            REFERENCE                  TARGETS               MINPODS   MAXPODS   REPLICAS
-webapp-webapp   Deployment/webapp-webapp   <unknown>/60%         2         6         2
+NAME            REFERENCE                  TARGETS               MINPODS   MAXPODS   REPLICAS   AGE
+webapp-webapp   Deployment/webapp-webapp   <unknown>/60%         2         6         2          1m
 ```
 
 The HPA cannot read CPU metrics. Three possible causes, in order of frequency:
@@ -1003,8 +1007,8 @@ In this article you:
 - Added an `HorizontalPodAutoscaler` resource to the webapp Helm chart, gated by `.Values.autoscaling.enabled`, scaling on CPU utilisation between 2 and 6 replicas
 - Patched the Deployment template to **conditionally omit `spec.replicas`** when autoscaling is enabled — preventing Helm/Argo CD from fighting the HPA
 - Pushed the changes through the GitOps loop from Day 10 and watched Argo CD apply the new HPA resource
-- Drove constant load against the webapp using a **k6 Kubernetes Job** routed through cluster DNS
-- Watched the HPA scale 2 → 4 → 6 replicas as CPU climbed past target, then **scale back down** after the 5-minute stabilisation window
+- Drove constant load using a **k6 Kubernetes Job** that routes through the in-cluster NGINX Ingress Controller (so the same load exercises both CPU and the ingress request-counter)
+- Watched the HPA scale 2 → 6 replicas in a single step as CPU climbed past target (default `scaleUp` policy), then **scale back down** to 2 after the 5-minute stabilisation window
 - Installed **Prometheus Adapter** (chart 4.11.0), wired a PromQL rule that converts `nginx_ingress_controller_requests` into the Kubernetes custom metric `requests_per_second`, and scaled the HPA on RPS in addition to CPU
 
 The cluster now auto-adjusts its capacity to actual load — both to a system-level signal (CPU) and to an application-level signal (RPS).
