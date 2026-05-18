@@ -77,9 +77,9 @@ The **Git repository** (amber) stores the `SealedSecret` blob. Because the blob 
 
 **Step 2** shows Argo CD picking up the `SealedSecret` from Git on its next sync cycle and running `kubectl apply` on it — exactly like any other Kubernetes resource in the chart.
 
-The **Sealed Secrets controller** (blue, inside the cluster) watches for `SealedSecret` resources via a Kubernetes informer. When it sees one, it performs step 3: decrypts the `encryptedData` field with the RSA private key (which lives only in a cluster-side Secret in `kube-system`) and creates a standard Kubernetes `Secret` in the target namespace.
+The **Sealed Secrets controller** (blue, inside the cluster) watches for `SealedSecret` resources via a Kubernetes informer. When it sees one, it performs step 3: decrypts the `encryptedData` field with the RSA private key (which lives only in a cluster-side Secret in `kube-system`) and creates a standard Kubernetes `Secret` (green — the only decrypted, ready-to-use resource in the chain) in the target namespace.
 
-**Step 4** shows the webapp Pod consuming the decrypted `Secret` via `envFrom: - secretRef:`. From the application's perspective, it just reads environment variables from a Secret — it has no knowledge of the Sealed Secrets machinery above it.
+**Step 4** shows the webapp Pod (grey, peripheral like the laptop — it does not participate in the encryption machinery) consuming the decrypted `Secret` via `envFrom: - secretRef:`. From the application's perspective, it just reads environment variables from a Secret — it has no knowledge of the Sealed Secrets machinery above it.
 
 The key insight: the private key never leaves the cluster and never touches Git. Every other piece — the SealedSecret, the Helm chart, the Application resource — can be fully public.
 
@@ -771,8 +771,10 @@ The SealedSecret was sealed with `namespace: staging` but applied to `namespace:
 Fix: re-seal from scratch with the correct namespace and name:
 
 ```bash
+# The --namespace value here MUST match the namespace the SealedSecret
+# will eventually be applied to. With strict scope it is baked into the cipher.
 kubectl create secret generic webapp-secret \
-  --namespace default \            # must match where you will apply it
+  --namespace default \
   --from-literal=API_KEY=value \
   --dry-run=client -o yaml \
 | kubeseal --controller-name=sealed-secrets \
@@ -788,11 +790,18 @@ Warning  Failed    2s    kubelet  Error: secret "webapp-secret" not found
 
 The Deployment rolled out before the controller finished creating the Secret. This can happen if the Deployment and SealedSecret are applied simultaneously.
 
-Fix: Argo CD applies resources in dependency order, but if you are applying manually, apply the SealedSecret first and wait for the Secret to appear before applying the Deployment:
+Fix: Argo CD applies resources in dependency order, but if you are applying manually, apply the SealedSecret first and poll until the controller has created the underlying Secret before applying the Deployment:
 
 ```bash
 kubectl apply -f webapp-sealed-secret.yaml
-kubectl wait --for=jsonpath='{.type}'=Opaque secret/webapp-secret -n default --timeout=30s
+
+# Poll until the controller creates the decrypted Secret (usually <2 s).
+# Works on every kubectl version; the alternative `kubectl wait --for=create`
+# was only added in kubectl 1.31.
+until kubectl get secret webapp-secret -n default >/dev/null 2>&1; do
+  sleep 1
+done
+
 kubectl apply -f deployment.yaml
 ```
 
