@@ -72,7 +72,7 @@ The **Git repository** (amber) holds the complete declaration of what should run
 
 Inside the **Argo CD** subgraph are two blue components. The **Repo Server** clones the repository, runs `helm template` with the configured values file, and produces plain Kubernetes YAML — the same manifests `helm install` would apply, but never applied by hand. The **Application Controller** is the reconciliation engine. It polls on a configurable interval (default: 3 minutes), compares the Repo Server's desired manifests against what the Kubernetes API reports as live, and calls `kubectl apply` on the delta if the two diverge.
 
-Two arrows leave the Argo CD subgraph: one drives the **Kubernetes cluster** (green) to the desired state; the other reads back the cluster's live state. The controller sits in this feedback loop continuously. If a human runs `kubectl scale` between polls, the controller detects the mismatch on the next poll, classifies the application as **OutOfSync**, and — when `selfHeal: true` is configured — applies the correction automatically.
+Two arrows connect the Argo CD subgraph to the **Kubernetes cluster** (green): one outbound arrow (CTRL → K8S) drives the cluster to the desired state by applying the rendered manifests; one inbound arrow (K8S → CTRL) carries back the live state so the controller can compare. The controller sits in this feedback loop continuously. If a human runs `kubectl scale` between polls, the controller detects the mismatch on the next poll, classifies the application as **OutOfSync**, and — when `selfHeal: true` is configured — applies the correction automatically.
 
 The key insight: Git is not just the deployment trigger. It is the audit log, the rollback mechanism, and the access control boundary. Whoever can merge to `main` controls what runs in the cluster — no `kubectl` access needed for routine deployments.
 
@@ -811,12 +811,15 @@ cd ~/30-days-devops/day-10/gitops-webapp
 
 cat > webapp/values-dev.yaml << 'EOF'
 # Dev environment overrides — merged over webapp/values.yaml at sync time.
+# Only include keys that differ from the chart defaults.
 
 replicaCount: 3
 
 image:
   tag: "1.27-alpine"
 
+# ClusterIP so traffic enters through the NGINX Ingress, not a NodePort.
+# This matches the values-ingress.yaml pattern established in Day 7.
 service:
   type: ClusterIP
   port: 80
