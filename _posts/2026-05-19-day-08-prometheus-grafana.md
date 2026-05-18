@@ -894,4 +894,4 @@ Metrics tell you **what** is wrong. Logs tell you **why**. Today you can see tha
 - Use **LogQL** (Loki's query language — Prometheus-style label selectors over logs) to find errors across all webapp pods in one query
 - Pivot from a CPU-spike point on a metrics dashboard directly to the logs for that pod, in the same Grafana panel
 
-[Day 9 coming soon →]
+[Day 9: Centralised Logging — Loki, Promtail, and LogQL →](/articles/2026/05/20/day-09-loki-logging/)

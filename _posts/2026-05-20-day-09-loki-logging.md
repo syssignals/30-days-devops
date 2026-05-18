@@ -482,19 +482,29 @@ Type this and run it:
 
 You should see a stream of log lines from Loki and Promtail Pods themselves — they log every push, scrape configuration reload, etc. This single-selector query is the equivalent of `kubectl logs -n loki --all-containers --tail=-1`, but you also get the time range picker, label tooltips, and the ability to share the URL.
 
-Try a few more selectors. Each uses Kubernetes labels Promtail attached automatically:
+Try a few more selectors — each uses Kubernetes labels Promtail attached automatically. Paste each one individually into the query bar and run it:
+
+All logs from the **default** namespace (your webapp pods):
 
 ```logql
-# All logs from the default namespace (your webapp pods)
 {namespace="default"}
+```
 
-# Just webapp container logs (in case the namespace has other Pods)
+Narrow to just the webapp container (useful when the namespace has other Pods too):
+
+```logql
 {namespace="default", container="webapp"}
+```
 
-# Specific Pod by name (use exact match)
+A specific Pod by exact name:
+
+```logql
 {namespace="default", pod="webapp-webapp-6c9d8f7b5-x7k2p"}
+```
 
-# All Pods in the monitoring namespace (Day 8's stack)
+All Pods in the monitoring namespace (Day 8's entire stack):
+
+```logql
 {namespace="monitoring"}
 ```
 
@@ -535,27 +545,43 @@ The four most useful pipeline operators:
 | `|~` | line **matches** regex | `\|~ "(?i)error\|fail"` |
 | `!~` | line does **not** match regex | `!~ "GET /(health\|metrics)"` |
 
-Useful real queries (try them all in Explore):
+Useful real queries — try each one individually in Explore:
+
+**Filter for any line containing "error":**
 
 ```logql
-# Find error lines from any webapp pod
 {namespace="default", container="webapp"} |= "error"
+```
 
-# Find error lines, case-insensitive
+**Case-insensitive match** — catches `ERROR`, `Error`, `FAIL`, `panic`, and similar:
+
+```logql
 {namespace="default", container="webapp"} |~ "(?i)error|fail|panic"
+```
 
-# Exclude health-check noise (nginx logs /health every readiness probe)
+**Exclude health-check noise** — nginx logs a line for every readiness probe; drop them:
+
+```logql
 {namespace="default", container="webapp"} != "GET /health"
+```
 
-# Stack the filters — errors, but not the boring TLS handshake ones
+**Stack pipeline stages** — errors, but not TLS handshake failures (which are noisy and not actionable):
+
+```logql
 {namespace="default", container="webapp"}
   |= "error"
   != "SSL_do_handshake() failed"
+```
 
-# Find specific HTTP status codes (nginx access log)
+**HTTP 5xx status codes** — the regex `" 5\d{2} "` matches the status field in nginx access logs:
+
+```logql
 {namespace="default", container="webapp"} |~ "\" 5\\d{2} "
+```
 
-# Rate of errors per minute, grouped by pod (this is LogQL "aggregations")
+**Rate aggregation** — converts matched log lines into a numeric metric (lines per second), grouped by Pod:
+
+```logql
 sum by (pod) (rate({namespace="default", container="webapp"} |= "error" [1m]))
 ```
 
@@ -933,4 +959,4 @@ In Day 10 you will:
 - Watch Argo CD detect drift when you `kubectl scale` and **auto-heal** the cluster back to Git's declared state
 - Promote a change from dev to prod by editing a values file in Git — no `helm upgrade` needed, ever again
 
-[Day 10 coming soon →]
+[Day 10: GitOps with Argo CD — Let Git Drive Your Cluster →](/articles/2026/05/21/day-10-argocd-gitops/)
