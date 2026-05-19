@@ -1017,6 +1017,6 @@ The cluster now auto-adjusts its capacity to actual load — both to a system-le
 
 ## What's next
 
-[Day 13: RBAC — ServiceAccounts, Roles, and the Principle of Least Privilege →](/articles/2026/05/24/day-13-rbac/)
+[Day 13: RBAC — ServiceAccounts, Roles, and the Principle of Least Privilege →](/articles/2026/05/19/day-13-rbac/)
 
 On Day 13 you will replace the over-broad `default` ServiceAccount your webapp Pods have been running with since Day 5. You will create a **`webapp-runtime` ServiceAccount** with **`automountServiceAccountToken: false`** (the app does not talk to the API server, so it should never carry an API token), commit it to the gitops-webapp chart, and watch Argo CD wire it into the Deployment. Then you will build a **`webapp-readonly` ServiceAccount** with a namespace-scoped **Role** granting only `get / list / watch` on the resources an observer would need — and verify every permission with `kubectl auth can-i`. The result: the webapp ships with no API credentials, and any operational tooling that does need access gets a token bound to a single, auditable role.
