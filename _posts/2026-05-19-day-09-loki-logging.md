@@ -1,6 +1,6 @@
 ---
 title: "Day 9: Centralised Logging — Loki, Promtail, and LogQL for Pinpoint Cluster Debugging"
-date: 2026-05-20
+date: 2026-05-19
 categories: [Kubernetes]
 tags: [kubernetes, loki, promtail, logging, grafana, logql, observability, devops]
 excerpt: "Metrics from Day 8 told you WHAT broke. Today you wire in Loki and Promtail to find out WHY. Single-binary Loki, Promtail as a DaemonSet, Loki as a second datasource in the Day 8 Grafana, then LogQL queries that pivot from a CPU spike on a dashboard to the exact log lines that caused it."
@@ -959,4 +959,4 @@ In Day 10 you will:
 - Watch Argo CD detect drift when you `kubectl scale` and **auto-heal** the cluster back to Git's declared state
 - Promote a change from dev to prod by editing a values file in Git — no `helm upgrade` needed, ever again
 
-[Day 10: GitOps with Argo CD — Let Git Drive Your Cluster →](/articles/2026/05/21/day-10-argocd-gitops/)
+[Day 10: GitOps with Argo CD — Let Git Drive Your Cluster →](/articles/2026/05/19/day-10-argocd-gitops/)

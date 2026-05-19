@@ -1,6 +1,6 @@
 ---
 title: "Day 11: Sealed Secrets — Encrypt Kubernetes Secrets for Safe Git Storage"
-date: 2026-05-22
+date: 2026-05-19
 categories: [Kubernetes]
 tags: [kubernetes, sealed-secrets, gitops, argocd, security, helm, devops]
 excerpt: "A raw Kubernetes Secret is just base64 — paste it into any terminal and you have the plaintext. Sealed Secrets fixes this: a controller inside the cluster holds the private key, you encrypt with the public key, and the resulting SealedSecret is safe to commit to Git. Argo CD syncs it, the controller decrypts it, and your app gets a real Secret — no secrets in plaintext, anywhere."
@@ -14,7 +14,7 @@ toc_sticky: true
 toc_label: "On this page"
 ---
 
-> **30 Days of DevOps** — Day 11 of 30. [← Day 10: GitOps with Argo CD](/articles/2026/05/21/day-10-argocd-gitops/)
+> **30 Days of DevOps** — Day 11 of 30. [← Day 10: GitOps with Argo CD](/articles/2026/05/19/day-10-argocd-gitops/)
 
 On Day 10 you pushed a Helm chart to GitHub and let Argo CD keep the cluster in sync automatically. There is one obvious gap in that model: what about Secrets? A Kubernetes `Secret` is base64-encoded, not encrypted. Anyone with read access to your Git repo — and eventually everyone on GitHub if it is public — can decode every credential you committed. You cannot store raw Secrets in Git, but Argo CD cannot sync what is not in Git.
 
@@ -899,6 +899,6 @@ Your cluster now stores no plaintext credentials in Git or in any file on your l
 
 ## What's next
 
-[Day 12: Horizontal Pod Autoscaler — Scale on CPU, Memory, and Custom Metrics →](/articles/2026/05/23/day-12-hpa-autoscaling/)
+[Day 12: Horizontal Pod Autoscaler — Scale on CPU, Memory, and Custom Metrics →](/articles/2026/05/19/day-12-hpa-autoscaling/)
 
 On Day 12 you will configure the **Horizontal Pod Autoscaler (HPA)** against the webapp Deployment. You will generate load with a `k6` script and watch the HPA fire: `kubectl get hpa --watch` as replica count climbs from 2 to 6 in response to CPU pressure. You will also add a custom-metric trigger using Prometheus Adapter — scaling on requests-per-second rather than raw CPU — and see how it interacts with the `resources.requests` you set in `values-dev.yaml`.

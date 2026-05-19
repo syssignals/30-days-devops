@@ -1,6 +1,6 @@
 ---
 title: "Day 10: GitOps with Argo CD — Let Git Drive Your Cluster"
-date: 2026-05-21
+date: 2026-05-19
 categories: [Kubernetes]
 tags: [kubernetes, argocd, gitops, helm, git, devops]
 excerpt: "Every deploy so far was helm upgrade-by-hand. GitOps fixes that: one git push makes Argo CD apply the diff, and any manual kubectl change gets auto-healed back to Git's declared state. Install Argo CD, expose its UI, push your Day 6 chart to GitHub, then watch drift detection and promotion work live."
@@ -14,7 +14,7 @@ toc_sticky: true
 toc_label: "On this page"
 ---
 
-> **30 Days of DevOps** — Day 10 of 30. [← Day 9: Centralised Logging](/articles/2026/05/20/day-09-loki-logging/)
+> **30 Days of DevOps** — Day 10 of 30. [← Day 9: Centralised Logging](/articles/2026/05/19/day-09-loki-logging/)
 
 Every deploy in this series so far was manual: `helm install`, `helm upgrade`, `kubectl apply` — run from your laptop against the cluster. That model works fine for one app and one engineer. It breaks when you have a team, multiple environments, a shared cluster, and a deployment that went wrong at midnight with no clear trail of who ran what.
 
@@ -1188,4 +1188,4 @@ In Day 11 you will:
 - Watch Argo CD sync it — and watch the controller silently decrypt and materialise the real Secret inside the cluster
 - Understand **scope** (namespace-wide vs cluster-wide seals) and **rotation** (what happens when the controller key expires)
 
-[Day 11: Sealed Secrets — Encrypt Kubernetes Secrets for Safe Git Storage →](/articles/2026/05/22/day-11-sealed-secrets/)
+[Day 11: Sealed Secrets — Encrypt Kubernetes Secrets for Safe Git Storage →](/articles/2026/05/19/day-11-sealed-secrets/)

@@ -1,6 +1,6 @@
 ---
 title: "Day 12: Horizontal Pod Autoscaler — Scale on CPU, Memory, and Custom Metrics"
-date: 2026-05-23
+date: 2026-05-19
 categories: [Kubernetes]
 tags: [kubernetes, hpa, autoscaling, k6, prometheus, metrics-server, devops]
 excerpt: "A fixed replicaCount wastes capacity at 3 AM and crashes the app at peak. HPA fixes that: install metrics-server, add an HPA resource to your Helm chart, and watch Kubernetes scale replicas up and down in response to live CPU pressure. Then go further — wire Prometheus Adapter into the loop and scale on requests-per-second, a metric your application actually cares about."
@@ -14,7 +14,7 @@ toc_sticky: true
 toc_label: "On this page"
 ---
 
-> **30 Days of DevOps** — Day 12 of 30. [← Day 11: Sealed Secrets](/articles/2026/05/22/day-11-sealed-secrets/)
+> **30 Days of DevOps** — Day 12 of 30. [← Day 11: Sealed Secrets](/articles/2026/05/19/day-11-sealed-secrets/)
 
 Every webapp Deployment so far has been driven by a single static `replicaCount` in the chart values — set once, ignored thereafter. That is the easiest thing to declare in a Helm chart, and the worst thing to run in production. At 3 AM your two pods are idle and you are paying for capacity you do not use. At 9 AM a marketing email lands, traffic spikes 10×, and those same two pods get CPU-throttled into latency hell before anyone notices. Fixed replicas are a compromise between two failure modes; they do not solve either one.
 
