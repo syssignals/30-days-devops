@@ -1017,6 +1017,6 @@ The cluster now auto-adjusts its capacity to actual load — both to a system-le
 
 ## What's next
 
-[Day 13: Network Policies — Default-Deny and Least-Privilege Pod Networking →](/articles/2026/05/24/day-13-network-policies/)
+[Day 13: RBAC — ServiceAccounts, Roles, and the Principle of Least Privilege →](/articles/2026/05/24/day-13-rbac/)
 
-On Day 13 you will replace kind's default "every pod can talk to every pod" networking with a zero-trust posture. You will install the **Calico** CNI in policy-only mode, apply a **default-deny ingress NetworkPolicy** to the `default` namespace, then write explicit allow rules for ingress-nginx → webapp traffic. You will use `kubectl exec` and `nc` to prove that the webapp is unreachable from a sidecar pod in the same namespace until the policy explicitly permits it — turning the cluster network from a flat trust zone into segmented compartments.
+On Day 13 you will replace the over-broad `default` ServiceAccount your webapp Pods have been running with since Day 5. You will create a **`webapp-runtime` ServiceAccount** with **`automountServiceAccountToken: false`** (the app does not talk to the API server, so it should never carry an API token), commit it to the gitops-webapp chart, and watch Argo CD wire it into the Deployment. Then you will build a **`webapp-readonly` ServiceAccount** with a namespace-scoped **Role** granting only `get / list / watch` on the resources an observer would need — and verify every permission with `kubectl auth can-i`. The result: the webapp ships with no API credentials, and any operational tooling that does need access gets a token bound to a single, auditable role.
