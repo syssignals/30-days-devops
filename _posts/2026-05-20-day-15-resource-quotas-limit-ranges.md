@@ -1,6 +1,6 @@
 ---
 title: "Day 15: ResourceQuotas and LimitRanges — Cap Aggregate Use, Default Per-Pod Limits"
-date: 2026-05-19
+date: 2026-05-20
 categories: [Kubernetes]
 tags: [kubernetes, resource-quota, limit-range, governance, admission, devops]
 excerpt: "Day 14 stopped Pods from doing dangerous things. Day 15 stops them from quietly consuming everything. One ResourceQuota caps a namespace's total CPU/memory/Pod/Service usage at admission time; one LimitRange fills in sane resources.requests/limits on every container that forgets to declare them. Together they turn a shared cluster from 'whoever ships first wins' into a budgeted multi-tenant environment — and they catch the obvious failure mode where an HPA tries to scale past the cap."

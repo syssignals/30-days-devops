@@ -639,6 +639,6 @@ Combined with Day 13, the workload security story is now: identity (no auto-moun
 
 ## What's next
 
-[Day 15: ResourceQuotas and LimitRanges — Cap Aggregate Use, Default Per-Pod Limits →](/articles/2026/05/19/day-15-resource-quotas-limit-ranges/)
+[Day 15: ResourceQuotas and LimitRanges — Cap Aggregate Use, Default Per-Pod Limits →](/articles/2026/05/20/day-15-resource-quotas-limit-ranges/)
 
 On Day 15 you will move from per-Pod hardening to per-namespace governance. You will apply a **`ResourceQuota`** to the `default` namespace that caps total CPU, memory, Pod count, and PVC count — and watch the API server reject the next Pod over the line, with the same admission-time hardness you just saw with PSA. You will then add a **`LimitRange`** that defaults `resources.requests` and `resources.limits` on every container, so any Pod that forgets to declare them inherits sane values instead of running unbounded. Two more admission controllers, one more layer of "the cluster cannot be misused by accident."
