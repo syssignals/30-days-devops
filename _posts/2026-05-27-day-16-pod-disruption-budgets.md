@@ -240,13 +240,23 @@ Read the columns:
 
 ## Part 2 — Drain a node, watch eviction succeed
 
-Pick the worker node hosting one of the webapp Pods (per the pre-flight check, either `devops-cluster-worker` or `devops-cluster-worker2`). Drain it with `kubectl drain`:
+Pick the worker node hosting one of the webapp Pods (per the pre-flight check, either `devops-cluster-worker` or `devops-cluster-worker2`).
+
+**Before draining, sanity-check where ingress-nginx is running**:
 
 ```bash
-# --ignore-daemonsets: don't try to evict DaemonSet Pods like kindnet,
-#   ingress-nginx (if configured as a DaemonSet), or kube-proxy. The cordon
-#   on the node prevents new DaemonSet Pods from being scheduled, but the
-#   existing ones stay running until the node itself is removed.
+kubectl get pod -n ingress-nginx -l app.kubernetes.io/name=ingress-nginx -o wide
+```
+
+The ingress-nginx controller is a single-replica Deployment (not a DaemonSet) with no PodDisruptionBudget of its own. If it is running on the node you are about to drain, `kubectl drain` will evict it, and the host-port-80 → ingress mapping will be unreachable for the few seconds it takes the replacement Pod to come up on the other worker. The webapp's PDB does **not** protect ingress-nginx — only the webapp Pods. To keep the `curl` loop below at `200` throughout, drain a node that the ingress-nginx controller is **not** currently on. If you need to swap them, `kubectl delete pod` the ingress controller and wait for it to land on the other worker before starting the drain.
+
+Drain the chosen worker:
+
+```bash
+# --ignore-daemonsets: don't try to evict DaemonSet Pods (kindnet and
+#   kube-proxy in a standard kind cluster). The cordon on the node prevents
+#   new DaemonSet Pods from being scheduled, but the existing ones stay
+#   running until the node itself is removed.
 #
 # --delete-emptydir-data: emptyDir volumes (Day 14 added one at /tmp for
 #   nginx's writable temp path) are by definition local to the Pod and
@@ -260,7 +270,7 @@ Expected output:
 
 ```text
 node/devops-cluster-worker cordoned
-Warning: ignoring DaemonSet-managed Pods: ingress-nginx/ingress-nginx-controller-xxxxx, kube-system/kindnet-yyyyy, kube-system/kube-proxy-zzzzz
+Warning: ignoring DaemonSet-managed Pods: kube-system/kindnet-yyyyy, kube-system/kube-proxy-zzzzz
 evicting pod default/webapp-webapp-7d8c6b4f9-aa1bb
 pod/webapp-webapp-7d8c6b4f9-aa1bb evicted
 node/devops-cluster-worker drained
@@ -332,7 +342,7 @@ Expected output (the drain command will run for ~30 seconds, retrying):
 
 ```text
 node/devops-cluster-worker2 cordoned
-Warning: ignoring DaemonSet-managed Pods: ingress-nginx/..., kube-system/kindnet-..., kube-system/kube-proxy-...
+Warning: ignoring DaemonSet-managed Pods: kube-system/kindnet-..., kube-system/kube-proxy-...
 evicting pod default/webapp-webapp-7d8c6b4f9-ee3ff
 evicting pod default/webapp-webapp-7d8c6b4f9-cc2dd
 error when evicting pods/"webapp-webapp-7d8c6b4f9-cc2dd" -n "default" (will retry after 5s): Cannot evict pod as it would violate the pod's disruption budget.
