@@ -512,6 +512,6 @@ The webapp now survives routine cluster maintenance: a node drain, a planned res
 
 ## What's next
 
-[Day 17: StatefulSets and Persistent Volumes — Stable Identity for Stateful Workloads →](/articles/2026/05/28/day-17-statefulsets-persistent-volumes/)
+[Day 17: StatefulSets and Persistent Volumes — Stable Identity for Stateful Workloads →](/articles/2026/05/27/day-17-statefulsets-persistent-volumes/)
 
 On Day 17 you will step out of the stateless-webapp story and into stateful workloads. You will deploy a PostgreSQL instance as a **StatefulSet** behind a **headless Service**, configure the StatefulSet's `volumeClaimTemplates` to provision a per-Pod **PersistentVolumeClaim**, and observe that — unlike the webapp's Pods — these Pods come up with **stable network identities** (`postgres-0`, `postgres-1`) and **stable disks** that survive Pod deletion. You will then exec into `postgres-0`, write a row, delete the Pod, and watch the same row come back when the kubelet recreates it. This is the architectural shift from "treat my workload as a herd of identical cattle" to "treat each instance as a named pet with permanent storage attached."
