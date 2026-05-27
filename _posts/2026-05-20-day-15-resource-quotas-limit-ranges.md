@@ -715,6 +715,6 @@ The cluster's `default` namespace is now a **bounded multi-tenant unit**: every 
 
 ## What's next
 
-[Day 16: PodDisruptionBudgets — Keep at Least N Pods Running Across Drains and Rollouts →](/articles/2026/05/20/day-16-pod-disruption-budgets/)
+[Day 16: PodDisruptionBudgets — Keep at Least N Pods Running Across Drains and Rollouts →](/articles/2026/05/27/day-16-pod-disruption-budgets/)
 
 On Day 16 you will turn from *capping* the namespace to *protecting* the workload. A `PodDisruptionBudget` tells the cluster: "at any moment, at least N webapp Pods must be Ready — refuse voluntary disruptions (node drains, eviction API calls, cluster-autoscaler scale-downs) that would drop below that floor." You will add a PDB to the webapp Helm chart with `minAvailable: 50%`, then run `kubectl drain` on one of the kind nodes and watch the eviction API back off cleanly when the PDB would be violated — turning rolling-node maintenance from a coordination headache into a one-command operation that respects the SLO.
