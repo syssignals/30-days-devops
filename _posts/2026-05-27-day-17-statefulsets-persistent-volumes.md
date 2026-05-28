@@ -248,9 +248,14 @@ spec:
             - name: POSTGRES_DB
               value: appdb
             # PGDATA points at a subdirectory inside the mount path,
-            # not the mount path itself. The mount path's root may
-            # contain a `lost+found` directory from ext4, which Postgres
-            # refuses to initialise on top of — see Common Errors #4.
+            # not the mount path itself. On real block-storage backends
+            # (EBS, GCE PD, Azure Disk) the freshly-formatted ext4 mount
+            # root contains a `lost+found` directory that Postgres' initdb
+            # refuses to run on top of; the subdirectory sidesteps it. On
+            # kind's local-path (a hostPath bind-mount, not a formatted
+            # volume) there is no lost+found, but we keep the subdirectory
+            # pattern so the chart is portable to real storage unchanged.
+            # See Common Errors #4.
             - name: PGDATA
               value: /var/lib/postgresql/data/pgdata
           volumeMounts:
@@ -286,16 +291,17 @@ Expected output:
 statefulset.apps/postgres created
 ```
 
-Wait for the Pod to be Ready. Postgres takes ~10–15 seconds on a cold start because it initialises the cluster on first boot:
+Wait for the Pod to be Ready. Postgres takes ~10–15 seconds on a cold start because it initialises the cluster on first boot. Use `kubectl rollout status` rather than `kubectl wait pod/postgres-0` here — immediately after `kubectl apply` the StatefulSet controller may not have created the Pod yet, and `kubectl wait` errors out with `no matching resources found` if the Pod object does not exist. `kubectl rollout status` watches the StatefulSet itself, so it handles that gap:
 
 ```bash
-kubectl wait --for=condition=ready pod/postgres-0 -n database --timeout=120s
+kubectl rollout status statefulset/postgres -n database --timeout=120s
 ```
 
 Expected output:
 
 ```text
-pod/postgres-0 condition met
+Waiting for 1 pods to be ready...
+statefulset rolling update complete 1 pods at revision postgres-6d4f8b9c7...
 ```
 
 Inspect what got created:
@@ -414,10 +420,10 @@ old uid: 7e3c8b5d-2a1f-4d6e-9c08-3e7a1b5d8f24
 pod "postgres-0" deleted
 ```
 
-Wait for the replacement:
+Wait for the replacement. `kubectl delete pod` returns once the old Pod is gone but before the StatefulSet controller has recreated it — so once again use `kubectl rollout status` (which waits for the StatefulSet to be fully Ready again) rather than `kubectl wait pod/postgres-0`, which could momentarily hit `no matching resources found` in that gap:
 
 ```bash
-kubectl wait --for=condition=ready pod/postgres-0 -n database --timeout=120s
+kubectl rollout status statefulset/postgres -n database --timeout=120s
 
 # Confirm it really is a new Pod (different UID) using the same name
 NEW_UID=$(kubectl get pod -n database postgres-0 -o jsonpath='{.metadata.uid}')
@@ -427,7 +433,8 @@ echo "new uid: $NEW_UID"
 Expected output:
 
 ```text
-pod/postgres-0 condition met
+Waiting for 1 pods to be ready...
+statefulset rolling update complete 1 pods at revision postgres-6d4f8b9c7...
 new uid: 9b5d8f24-1f4d-6e08-3e7a-2a1f7e3c8b5d
 ```
 
@@ -600,9 +607,11 @@ initdb: error: directory "/var/lib/postgresql/data" exists but is not empty
 It contains a lost+found directory, perhaps due to it being a mount point.
 ```
 
-Cause: `PGDATA` was set to the mount path itself, not a subdirectory. On ext4-backed volumes the mount root contains a `lost+found` directory created by the filesystem; Postgres refuses to initdb on top of it.
+Cause: `PGDATA` was set to the mount path itself, not a subdirectory, **and** the volume backend formats the volume as a filesystem. On real block-storage CSI drivers (AWS EBS, GCE PD, Azure Disk, Ceph RBD) the volume is a freshly-formatted ext4/xfs block device, and the filesystem driver creates a `lost+found` directory at the root. Postgres' `initdb` refuses to run on a non-empty directory, so it crash-loops.
 
-Fix: set `PGDATA` to a subdirectory of the mount:
+**This specific error will *not* appear on kind.** kind's `local-path-provisioner` provisions a `hostPath` bind-mount of a directory on the node — there is no formatted block device and therefore no `lost+found`. A learner who points `PGDATA` directly at `/var/lib/postgresql/data` on kind will *not* hit this error. So why does this article still use the subdirectory? Portability: the moment you move the same chart to a real cloud StorageClass, the mount root *will* contain `lost+found`, and the subdirectory pattern means the manifest works unchanged. Treat it as the safe default everywhere.
+
+Fix (on a backend where you do hit this): set `PGDATA` to a subdirectory of the mount:
 
 ```yaml
 env:
@@ -610,7 +619,7 @@ env:
     value: /var/lib/postgresql/data/pgdata     # subdir, not the mount root
 volumeMounts:
   - name: data
-    mountPath: /var/lib/postgresql/data        # mount root — has lost+found
+    mountPath: /var/lib/postgresql/data        # mount root — may have lost+found
 ```
 
 This is exactly the pattern Part 3 uses; verify both lines if you see this error.
@@ -641,7 +650,7 @@ kubectl get pvc -n database
 # data-postgres-0 still here!
 ```
 
-Cause: not a bug. StatefulSet's deletion cascade does not include PVCs created by `volumeClaimTemplates`, so that an accidental delete of the workload does not destroy your data. Kubernetes 1.27+ added an opt-in `spec.persistentVolumeClaimRetentionPolicy` to change this:
+Cause: not a bug. StatefulSet's deletion cascade does not include PVCs created by `volumeClaimTemplates`, so that an accidental delete of the workload does not destroy your data. The `spec.persistentVolumeClaimRetentionPolicy` field (alpha in 1.23, beta and on-by-default from Kubernetes 1.27, GA in 1.32) lets you opt into deleting the PVCs instead:
 
 ```yaml
 spec:
