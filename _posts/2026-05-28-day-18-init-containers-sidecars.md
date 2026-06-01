@@ -560,6 +560,6 @@ The webapp Pod is now a genuine multi-container unit, and you have the pattern t
 
 ## What's next
 
-[Day 19: Jobs and CronJobs — Batch and Scheduled Workloads →](/articles/2026/05/29/day-19-jobs-cronjobs/)
+[Day 19: Jobs and CronJobs — Batch Workloads, Parallelism, and Scheduled Backups →](/articles/2026/06/01/day-19-jobs-cronjobs/)
 
 On Day 19 you will go deeper into the `Job` you met in Part 4. You will run a **parallel Job** with `completions` and `parallelism` to process a work queue, tune `backoffLimit` and `activeDeadlineSeconds` so a wedged Job fails fast instead of retrying forever, and learn how `restartPolicy: Never` vs `OnFailure` changes retry accounting. Then you will schedule a **CronJob** — a nightly `pg_dump` of the Postgres StatefulSet from Day 17 into a PersistentVolume — and use `concurrencyPolicy: Forbid`, `startingDeadlineSeconds`, and `successfulJobsHistoryLimit` to keep the schedule clean. Batch is where the init-container and native-sidecar patterns from today pay off most.
