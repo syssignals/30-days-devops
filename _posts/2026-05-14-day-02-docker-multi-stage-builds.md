@@ -331,32 +331,70 @@ We need a real application — not a toy. This is a Node.js REST API with actual
 
 ```bash
 mkdir docker-best-practices && cd docker-best-practices
-npm init -y
 mkdir -p src/routes src/middleware
 ```
 
-### Step 2: Install dependencies
+> **Working-directory reminder:** Every command from here through Part 7 assumes your shell is inside `docker-best-practices/`. If you open a new terminal mid-article, run `cd ~/docker-best-practices` (or wherever you created it) before continuing.
+
+### Step 2: Write the complete `package.json`
+
+We give you the full file as one copy-paste block — no `npm init -y` followed by patches. Every dependency version is pinned so two readers running this on different days end up with identical lockfiles, which is what `npm ci` inside the Dockerfile (Part 3) relies on:
 
 ```bash
-# Production dependencies — go into the final image
-npm install express helmet cors morgan zod dotenv
+cat > package.json << 'EOF'
+{
+  "name": "docker-best-practices",
+  "version": "1.0.0",
+  "description": "Sample Node.js REST API for Day 2 of 30 Days of DevOps",
+  "main": "src/index.js",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "nodemon src/index.js",
+    "test": "jest --coverage",
+    "test:ci": "jest --ci --forceExit"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "helmet": "^7.1.0",
+    "morgan": "^1.10.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "nodemon": "^3.1.4",
+    "supertest": "^7.0.0"
+  }
+}
+EOF
+```
 
-# Development dependencies — must NEVER go into a production image
-npm install --save-dev nodemon jest supertest
+Now install everything in one shot. `npm install` (no arguments) reads the manifest above and writes both `node_modules/` and `package-lock.json`:
+
+```bash
+npm install
 ```
 
 Verify the size impact:
 
 ```bash
 du -sh node_modules/
-# ~75MB — this entire directory should never reach a production image
+# Roughly ~75 MB — this entire directory should never reach a production image.
+# The whole point of the multi-stage Dockerfile in Part 3 is keeping this out.
 ```
 
 ### Step 3: Create the application source
 
+Four files. Each one is a complete `cat > path << 'EOF'` block — copy, paste, hit enter. Your editor doesn't need to be open.
+
 **`src/index.js`** — application entry point:
 
-```javascript
+```bash
+cat > src/index.js << 'EOF'
 'use strict';
 
 const express = require('express');
@@ -384,7 +422,7 @@ app.use((req, res) => res.status(404).json({ error: 'Route not found' }));
 app.use(errorHandler);
 
 const server = app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Server running on port ${PORT} [${process.env.NODE_ENV || 'development'}]`);
+  console.log('Server running on port ' + PORT + ' [' + (process.env.NODE_ENV || 'development') + ']');
 });
 
 process.on('SIGTERM', () => {
@@ -397,11 +435,15 @@ process.on('SIGINT', () => {
 });
 
 module.exports = { app };
+EOF
 ```
+
+> Note: the `console.log` above uses string concatenation rather than backtick template literals. Inside a `<< 'EOF'` heredoc the shell still strips `$` from any unquoted `${VAR}` it sees — switching to plain concatenation keeps the heredoc bulletproof.
 
 **`src/routes/health.js`**:
 
-```javascript
+```bash
+cat > src/routes/health.js << 'EOF'
 'use strict';
 
 const { Router } = require('express');
@@ -419,11 +461,13 @@ router.get('/', (req, res) => {
 router.get('/ready', (req, res) => res.json({ status: 'ready' }));
 
 module.exports = { healthRouter: router };
+EOF
 ```
 
 **`src/routes/users.js`**:
 
-```javascript
+```bash
+cat > src/routes/users.js << 'EOF'
 'use strict';
 
 const { Router } = require('express');
@@ -464,11 +508,13 @@ router.post('/', (req, res) => {
 });
 
 module.exports = { usersRouter: router };
+EOF
 ```
 
 **`src/middleware/errorHandler.js`**:
 
-```javascript
+```bash
+cat > src/middleware/errorHandler.js << 'EOF'
 'use strict';
 
 const errorHandler = (err, req, res, next) => {
@@ -480,6 +526,7 @@ const errorHandler = (err, req, res, next) => {
 };
 
 module.exports = { errorHandler };
+EOF
 ```
 
 **`.env.example`** — document required variables (commit this, never `.env`):
@@ -492,45 +539,36 @@ ALLOWED_ORIGINS=http://localhost:3000
 EOF
 ```
 
-Update `package.json` scripts:
+Verify the app works outside Docker first — we'll move it into a container in Part 2:
 
 ```bash
-node -e "
-const fs = require('fs');
-const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-pkg.main = 'src/index.js';
-pkg.engines = { node: '>=20.0.0' };
-pkg.scripts = {
-  start: 'node src/index.js',
-  dev: 'nodemon src/index.js',
-  test: 'jest --coverage',
-  'test:ci': 'jest --ci --forceExit'
-};
-fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2));
-console.log('Updated package.json');
-"
-```
+# Free port 3000 if anything is already on it (safe to re-run this block)
+lsof -ti:3000 | xargs kill 2>/dev/null
 
-Verify the app works outside Docker first:
-
-```bash
+# Start the app in the background, capture its PID
 NODE_ENV=development node src/index.js &
 APP_PID=$!
-sleep 1
 
-curl -s http://localhost:3000/health | python3 -m json.tool
+# Wait up to 5s for /health to respond, then hit it
+for i in 1 2 3 4 5; do
+  curl -sf http://localhost:3000/health > /dev/null && break
+  sleep 1
+done
 
+# Raw JSON works fine — pretty-printing is optional. If you have `jq`
+# installed, pipe through `jq` for a coloured tree view.
+curl -s http://localhost:3000/health
+echo
+
+# Clean up
 kill $APP_PID 2>/dev/null
+wait $APP_PID 2>/dev/null
 ```
 
-Expected output:
+Expected output (one line — your timestamp will differ):
+
 ```json
-{
-    "status": "healthy",
-    "timestamp": "2026-05-14T10:23:45.123Z",
-    "uptime": 0,
-    "environment": "development"
-}
+{"status":"healthy","timestamp":"...","uptime":0,"environment":"development"}
 ```
 
 ---
@@ -567,9 +605,10 @@ Build it and inspect:
 docker build -f Dockerfile.naive -t myapp:naive .
 ```
 
-Expected build output:
+Expected build output (the build time varies — typically 30–60 seconds on the first run, much faster on rebuilds thanks to the BuildKit layer cache):
+
 ```
-[+] Building 42.1s (8/8) FINISHED
+[+] Building XXs (8/8) FINISHED
  => [internal] load build definition from Dockerfile.naive
  => [1/4] FROM docker.io/library/node:20
  => [2/4] WORKDIR /app
@@ -760,9 +799,10 @@ DOCKER_BUILDKIT=1 docker build \
   .
 ```
 
-Expected output:
+Expected output (image hash and build time will be unique to your machine):
+
 ```
-[+] Building 18.4s (13/13) FINISHED
+[+] Building XXs (13/13) FINISHED
  => [deps 1/3] FROM docker.io/library/node:20-alpine
  => [deps 2/3] COPY package.json package-lock.json ./
  => [deps 3/3] RUN npm ci --omit=dev
@@ -770,7 +810,7 @@ Expected output:
  => [production 2/4] COPY src/ ./src/
  => [production 3/4] COPY package.json ./
  => exporting to image
- => => writing image sha256:b7e3d4...
+ => => writing image sha256:<unique-to-your-build>...
 ```
 
 Compare sizes:
@@ -779,14 +819,15 @@ Compare sizes:
 docker images | grep myapp
 ```
 
-Expected output:
+Expected output (image IDs are random and your sizes may vary by ~5 MB depending on base image patch version):
+
 ```
 REPOSITORY   TAG          IMAGE ID       CREATED          SIZE
-myapp        production   b7e3d4f8a1c2   10 seconds ago   47.2MB
-myapp        naive        a3f8c2d1e4b9   5 minutes ago    1.21GB
+myapp        production   <random hex>   10 seconds ago   ~47 MB
+myapp        naive        <random hex>   5 minutes ago    ~1.2 GB
 ```
 
-**96% reduction. 1.21 GB → 47 MB.**
+**~96% reduction. ~1.2 GB → ~47 MB.**
 
 Verify it runs and is correctly hardened:
 
@@ -937,9 +978,10 @@ The two subgraphs represent two different ways to run the same application. You 
 - `node_modules` lives in a **named volume** (the yellow cylinder), *not* a bind mount — this is intentional. Your local `node_modules` was compiled for your host OS (macOS/Linux). The container's `node_modules` was compiled for Alpine Linux. Mounting your local one over it would break native module bindings. The named volume keeps them separate
 - nodemon detects file changes and restarts the Node process in under 2 seconds
 
-**`docker-compose.yml`** — development:
+Create `docker-compose.yml` for the development stack. Every comment that was in the YAML above is preserved inline so you can paste the whole block as one operation — no editor switch needed:
 
-```yaml
+```bash
+cat > docker-compose.yml << 'EOF'
 version: '3.9'
 
 services:
@@ -992,11 +1034,13 @@ services:
 
 volumes:
   node_modules:
+EOF
 ```
 
-**`docker-compose.prod.yml`** — production-like local testing:
+Now create `docker-compose.prod.yml` for production-like local testing:
 
-```yaml
+```bash
+cat > docker-compose.prod.yml << 'EOF'
 version: '3.9'
 
 services:
@@ -1052,6 +1096,7 @@ services:
         reservations:
           cpus: '0.10'
           memory: 64M
+EOF
 ```
 
 Start development:
@@ -1071,19 +1116,59 @@ myapp-dev  | [nodemon] watching path(s): src/**/*
 myapp-dev  | Server running on port 3000 [development]
 ```
 
-Test hot reload without rebuilding:
+Test hot reload without rebuilding. In a second terminal, **overwrite** `src/routes/health.js` with a version that has a different status string — full file, no `sed`, works identically on Linux and macOS:
 
 ```bash
-# In a second terminal
-sed -i 's/"healthy"/"all-systems-go"/' src/routes/health.js
+cat > src/routes/health.js << 'EOF'
+'use strict';
 
-# Watch the container log — nodemon restarts automatically
-# Then verify the change
+const { Router } = require('express');
+const router = Router();
+
+router.get('/', (req, res) => {
+  res.json({
+    status: 'all-systems-go',
+    timestamp: new Date().toISOString(),
+    uptime: Math.floor(process.uptime()),
+    environment: process.env.NODE_ENV || 'development',
+  });
+});
+
+router.get('/ready', (req, res) => res.json({ status: 'ready' }));
+
+module.exports = { healthRouter: router };
+EOF
+```
+
+Watch the container log — nodemon detects the file change and restarts automatically. Then verify the change is live:
+
+```bash
 curl -s http://localhost:3000/health | grep status
 # {"status":"all-systems-go",...}
+```
 
-# Revert
-sed -i 's/"all-systems-go"/"healthy"/' src/routes/health.js
+Revert by overwriting the file again with the original status:
+
+```bash
+cat > src/routes/health.js << 'EOF'
+'use strict';
+
+const { Router } = require('express');
+const router = Router();
+
+router.get('/', (req, res) => {
+  res.json({
+    status: 'healthy',
+    timestamp: new Date().toISOString(),
+    uptime: Math.floor(process.uptime()),
+    environment: process.env.NODE_ENV || 'development',
+  });
+});
+
+router.get('/ready', (req, res) => res.json({ status: 'ready' }));
+
+module.exports = { healthRouter: router };
+EOF
 ```
 
 Stop and clean up:
@@ -1096,31 +1181,35 @@ docker compose down -v   # -v also removes named volumes
 
 ## Part 6: Docker Scout vulnerability scan
 
-Compare both images side by side:
+Compare both images side by side. **Docker Scout requires `docker login` first** — if you see `unauthorized` errors below, run `docker login` (with your Docker Hub account, free tier is fine) and re-run:
 
 ```bash
 # Naive image — expect many CVEs
 echo "=== naive image ===" && \
-docker scout cves myapp:naive --only-severity critical,high --format table 2>/dev/null | head -30
+docker scout cves myapp:naive --only-severity critical,high --format table | head -30
 
 echo ""
 
 # Production image — expect zero
 echo "=== production image ===" && \
-docker scout cves myapp:production --only-severity critical,high 2>/dev/null
+docker scout cves myapp:production --only-severity critical,high
 ```
 
-Expected output:
+Expected output (exact CVE IDs and counts will drift as the CVE database updates and new fixes ship — what matters is the **gap** between the two images):
+
 ```
 === naive image ===
-  CRITICAL CVE-2023-38545  curl/libcurl4  ...
-  HIGH     CVE-2024-0727   openssl        ...
-  HIGH     CVE-2023-44487  nghttp2        ...
-  ... (30+ vulnerabilities) ...
+  CRITICAL CVE-XXXX-XXXXX  curl/libcurl4  ...
+  HIGH     CVE-XXXX-XXXXX  openssl        ...
+  HIGH     CVE-XXXX-XXXXX  nghttp2        ...
+  [output truncated — typically 10-40 high/critical entries depending
+   on when you run this and how recently node:20 was last patched]
 
 === production image ===
     ✓ Analyzed image myapp:production
     No critical or high vulnerabilities found
+    [occasionally 1-2 highs appear briefly when fresh CVEs are filed
+     against the distroless base — re-pull the base in a week to refresh]
 ```
 
 Run a full comparison:
@@ -1266,11 +1355,17 @@ npm error missing: express@4.18.2, required by myapp@1.0.0
 **Fix:**
 
 ```bash
-# Regenerate the lockfile
-rm package-lock.json
+# Regenerate the lockfile (safe to re-run — guards against missing file)
+[ -f package-lock.json ] && rm package-lock.json
 npm install
-git add package-lock.json
-git commit -m "chore: regenerate package-lock.json"
+
+# Commit ONLY if this directory is a git repo (this tutorial doesn't
+# require it). The guard prevents `fatal: not a git repository` if you
+# never ran `git init`.
+git rev-parse --is-inside-work-tree >/dev/null 2>&1 && {
+  git add package-lock.json
+  git commit -m "chore: regenerate package-lock.json"
+}
 
 # Now rebuild
 docker build --target production -t myapp:production .
@@ -1287,15 +1382,17 @@ docker run myapp:production
 
 **Cause:** Shell form CMD in a distroless image. There is no shell to parse it.
 
-**Fix:** Use exec form (array syntax) and the correct Node path for distroless:
+**Fix:** Use exec form (array syntax) and the correct Node path for distroless. The Part 3 Dockerfile already uses the correct form — this is an **illustration only, do not paste** — showing the difference between the broken and fixed line:
 
-```dockerfile
-# Wrong — shell form, silently fails in distroless
-CMD node src/index.js
+> ```dockerfile
+> # Wrong — shell form, silently fails in distroless
+> CMD node src/index.js
+>
+> # Correct — exec form with distroless node path
+> CMD ["/nodejs/bin/node", "src/index.js"]
+> ```
 
-# Correct — exec form with distroless node path
-CMD ["/nodejs/bin/node", "src/index.js"]
-```
+If your Dockerfile uses the wrong form, re-run the `cat > Dockerfile << 'EOF' ... EOF` block from Part 3 to overwrite it cleanly.
 
 Verify the correct node path in the distroless image:
 
@@ -1315,17 +1412,19 @@ Error: Cannot find module 'express'
 
 **Cause:** WORKDIR differs between stages, or the path in `COPY --from` doesn't match.
 
-**Fix:** Ensure WORKDIR is identical in all stages and COPY path is absolute:
+**Fix:** Ensure WORKDIR is identical in all stages and the `COPY --from` path is absolute. **Illustration only — do not paste**; the Part 3 Dockerfile already has these lines correct. Confirm your Dockerfile matches:
 
-```dockerfile
-FROM node:20-alpine AS deps
-WORKDIR /app                          # ← must be /app
-RUN npm ci --omit=dev
-
-FROM gcr.io/distroless/nodejs20-debian12 AS production
-WORKDIR /app                          # ← same: /app
-COPY --from=deps /app/node_modules ./node_modules   # ← full path from deps
-```
+> ```dockerfile
+> FROM node:20-alpine AS deps
+> WORKDIR /app                          # must be /app
+> RUN npm ci --omit=dev
+>
+> FROM gcr.io/distroless/nodejs20-debian12 AS production
+> WORKDIR /app                          # same: /app
+> COPY --from=deps /app/node_modules ./node_modules   # full path from deps
+> ```
+>
+> If yours diverges, re-run the `cat > Dockerfile << 'EOF' ... EOF` block from Part 3.
 
 ---
 
@@ -1338,23 +1437,27 @@ COPY --from=deps /app/node_modules ./node_modules   # ← full path from deps
 
 **Cause:** Docker on Linux doesn't propagate `inotify` events into containers by default in some configurations.
 
-**Fix:** Switch nodemon to polling mode:
+**Fix:** Switch nodemon to polling mode. Easiest path is to drop a `nodemon.json` into the project root — nodemon picks it up automatically without touching `docker-compose.yml`:
 
 ```bash
-# Update the command in docker-compose.yml
-command: ["node_modules/.bin/nodemon", "--legacy-watch", "--watch", "src", "src/index.js"]
-```
-
-Or add `nodemon.json` to the project root:
-
-```json
+cat > nodemon.json << 'EOF'
 {
   "watch": ["src"],
   "ext": "js,json",
   "legacy-watch": true,
   "delay": 500
 }
+EOF
 ```
+
+Then restart the stack so the dev container picks up the new file:
+
+```bash
+docker compose down
+docker compose up --build
+```
+
+The `legacy-watch: true` flag tells nodemon to poll the filesystem every 500ms instead of relying on `inotify` events that don't propagate.
 
 ---
 
@@ -1460,15 +1563,58 @@ docker buildx build \
   .
 ```
 
-3. **Add a debug target.** Distroless has no shell, which is the point — but debugging a production issue is hard without one. Add a debug stage that includes busybox:
+3. **Add a debug target.** Distroless has no shell, which is the point — but debugging a production issue is hard without one. The `:debug` tag variant of distroless ships with **busybox** (a tiny single-binary `sh` plus core utilities), giving you `docker exec ... sh` for investigation. To add this without losing the Part 3 stages, overwrite your `Dockerfile` with the full 5-stage version (everything from Part 3 plus a new `debug` stage at the bottom):
 
-```dockerfile
+```bash
+cat > Dockerfile << 'EOF'
+# ─── Stage 1: deps ────────────────────────────────────────────────────────────
+FROM node:20-alpine AS deps
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci --omit=dev
+
+# ─── Stage 2: dev ─────────────────────────────────────────────────────────────
+FROM node:20-alpine AS dev
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci
+
+# ─── Stage 3: test ────────────────────────────────────────────────────────────
+FROM node:20-alpine AS test
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci
+COPY . .
+RUN npm run test:ci --if-present
+
+# ─── Stage 4: production ──────────────────────────────────────────────────────
+FROM gcr.io/distroless/nodejs20-debian12 AS production
+LABEL org.opencontainers.image.title="myapp"
+LABEL org.opencontainers.image.description="Node.js REST API - 30 Days of DevOps"
+LABEL org.opencontainers.image.source="https://github.com/syssignals/30-days-devops"
+LABEL org.opencontainers.image.licenses="MIT"
+WORKDIR /app
+COPY --from=deps /app/node_modules ./node_modules
+COPY src/ ./src/
+COPY package.json ./
+USER nonroot
+EXPOSE 3000
+CMD ["/nodejs/bin/node", "src/index.js"]
+
+# ─── Stage 5: debug ───────────────────────────────────────────────────────────
+# :debug variant of distroless ships busybox so `docker exec ... sh` works
+# for investigation. Build with --target debug. NEVER ship this tag to prod.
 FROM gcr.io/distroless/nodejs20-debian12:debug AS debug
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY src/ ./src/
 COPY package.json ./
+USER nonroot
 CMD ["/nodejs/bin/node", "src/index.js"]
+EOF
 ```
 
 Build with `--target debug` when you need a shell for investigation. Never ship this tag.
