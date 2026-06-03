@@ -696,6 +696,7 @@ A few Dockerfile concepts you'll see below for the first time:
 - **`RUN --mount=type=cache,target=/root/.npm`** — a **BuildKit cache mount**: the npm package cache at `/root/.npm` is persisted between builds in BuildKit's own cache, not baked into the image. The first build downloads every dep; every subsequent build pulls tarballs from cache instantly. This is the BuildKit feature we set up Buildx for in the prerequisites.
 - **`EXPOSE <port>`** — pure metadata: it documents the port the container listens on so registries, orchestrators, and humans know how to reach the app. It does **not** publish the port — that still requires `-p 3000:3000` at run time. Common newcomer trap.
 - **`USER <name>`** — sets the uid that every subsequent `RUN`, `CMD`, and `ENTRYPOINT` runs as. Without `USER`, the container runs as root.
+- **Distroless ENTRYPOINT is preset** — the `gcr.io/distroless/nodejs20-debian12` image already has `ENTRYPOINT ["/nodejs/bin/node"]` baked in. Your `CMD` is the *argument list* for that entrypoint, not the full command. Write `CMD ["src/index.js"]`, **not** `CMD ["/nodejs/bin/node", "src/index.js"]` — the second form makes the container try to run `/nodejs/bin/node /nodejs/bin/node src/index.js` and node fails immediately trying to parse the binary path as JavaScript. This is the #1 footgun new distroless users hit.
 
 ```bash
 cat > Dockerfile << 'EOF'
@@ -777,11 +778,17 @@ USER nonroot
 # Doesn't actually open the port; that still requires `-p 3000:3000` at run time.
 EXPOSE 3000
 
-# Exec form (array) is required in distroless — there is no shell to interpret
-# the shell form. /nodejs/bin/node is the absolute path because distroless has
-# no PATH-friendly shell to resolve `node` on its own. Exec form also makes
-# node PID 1, so SIGTERM from `docker stop` reaches it directly.
-CMD ["/nodejs/bin/node", "src/index.js"]
+# CMD is the script path ONLY — do NOT prefix it with /nodejs/bin/node.
+# The distroless nodejs image presets ENTRYPOINT ["/nodejs/bin/node"]
+# for you, so this CMD becomes argv for that entrypoint. The final
+# command the container actually runs is:
+#     /nodejs/bin/node src/index.js
+# If you write CMD ["/nodejs/bin/node", "src/index.js"], the container
+# tries to run `/nodejs/bin/node /nodejs/bin/node src/index.js` and
+# Node fails immediately trying to parse /nodejs/bin/node as JavaScript.
+# Exec form (array) also makes node PID 1, so SIGTERM from `docker stop`
+# reaches it directly.
+CMD ["src/index.js"]
 EOF
 ```
 
@@ -829,33 +836,52 @@ myapp        naive        <random hex>   5 minutes ago    ~1.2 GB
 
 **~96% reduction. ~1.2 GB → ~47 MB.**
 
-Verify it runs and is correctly hardened:
+Verify it runs and is correctly hardened. **Distroless is restrictive by design** — it has no `id`, no `sh`, no `cat`, no `whoami`. The verification techniques below avoid those entirely. We read configuration with `docker inspect` (which queries Docker's own metadata, not the container's filesystem) and prove the hardening by trying things that *should* fail:
 
 ```bash
-# Start it
+# Start it in the background
 docker run -d \
   --name myapp-test \
   -p 3000:3000 \
   -e NODE_ENV=production \
   myapp:production
 
-sleep 2
+# Wait for the app to come up (give Node ~3 seconds to start listening)
+sleep 3
 
-# Test the health endpoint
+# Confirm the container is actually Running (not Restarting / Exited)
+docker ps --filter "name=myapp-test" --format "table {{.Names}}\t{{.Status}}"
+# NAME         STATUS
+# myapp-test   Up 3 seconds
+
+# Test the health endpoint from the host
 curl -s http://localhost:3000/health | python3 -m json.tool
+# {
+#     "status": "healthy",
+#     ...
+# }
 
-# Verify non-root
-docker run --rm myapp:production id
-# uid=65532(nonroot) gid=65532(nonroot) groups=65532(nonroot)
+# Verify the configured user via Docker's own metadata
+# (distroless has no `id`/`whoami` binary, so we read what the image
+#  config says rather than running a command inside the container)
+docker inspect --format '{{.Config.User}}' myapp:production
+# nonroot
 
-# Verify no shell available (this should fail — that's the point)
+# Verify no shell available — `docker exec sh` SHOULD fail.
+# That's the proof the attack surface is reduced. Exit code 126.
 docker exec myapp-test sh 2>&1
 # OCI runtime exec failed: exec failed: unable to start container process:
-# exec: "sh": executable file not found in $PATH
+# exec: "sh": executable file not found in $PATH: unknown
+
+# Same story for `ls`, `cat`, anything you'd reach for in a normal image
+docker exec myapp-test ls 2>&1
+# OCI runtime exec failed: ... exec: "ls": executable file not found ...
 
 # Stop and remove
 docker stop myapp-test && docker rm myapp-test
 ```
+
+If the container is *not* running (`docker ps` shows it exited), check `docker logs myapp-test` — the most common cause is the CMD bug warned about above (`CMD ["/nodejs/bin/node", "src/index.js"]` instead of `CMD ["src/index.js"]`). Re-run the `cat > Dockerfile << 'EOF' ... EOF` block from earlier, rebuild, and try again.
 
 ---
 
@@ -1338,7 +1364,7 @@ Distroless contains none of that. The `gcr.io/distroless/nodejs20-debian12` imag
 
 `CMD node src/index.js` is shell form. Docker wraps it as `/bin/sh -c node src/index.js`. Your Node process runs as a child of `/bin/sh`, not as PID 1. When Kubernetes or Docker sends `SIGTERM` to stop your container, it sends it to PID 1 — the shell. The shell may or may not forward the signal. Your graceful shutdown handler may never fire. Connections get dropped mid-request. Databases get dirty disconnects.
 
-`CMD ["/nodejs/bin/node", "src/index.js"]` is exec form. Node becomes PID 1 directly. SIGTERM reaches your `process.on('SIGTERM')` handler reliably. Graceful shutdown works as designed.
+`CMD ["src/index.js"]` (in distroless, where ENTRYPOINT is already `/nodejs/bin/node`) is exec form. The container runs `node` as PID 1 directly — no shell wrapper. SIGTERM reaches your `process.on('SIGTERM')` handler reliably. Graceful shutdown works as designed. If you were *not* using distroless and didn't have a preset ENTRYPOINT, the equivalent would be `CMD ["node", "src/index.js"]` — still exec form, still PID 1.
 
 ---
 
@@ -1377,28 +1403,45 @@ docker build --target production -t myapp:production .
 
 ```bash
 docker run myapp:production
-# (exits instantly, no logs)
+# Container exits instantly. Run `docker logs <container>` to see why —
+# the error tells you which of the two CMD bugs is yours:
+#   "exec: \"/bin/sh\": no such file or directory"  → shell-form CMD bug (#1)
+#   "SyntaxError: Unexpected token" / "Cannot find module" → double-node CMD bug (#2)
 ```
 
-**Cause:** Shell form CMD in a distroless image. There is no shell to parse it.
+**Cause:** One of two CMD bugs:
+1. **Shell form** (`CMD node src/index.js`) — Docker wraps shell-form CMDs as `/bin/sh -c "..."`, but distroless has no `/bin/sh`. The container's exec fails with `exec: "/bin/sh": no such file or directory` (visible via `docker logs`).
+2. **Double node** (`CMD ["/nodejs/bin/node", "src/index.js"]`) — distroless already has `ENTRYPOINT ["/nodejs/bin/node"]` preset, so this becomes `/nodejs/bin/node /nodejs/bin/node src/index.js`. Node tries to parse `/nodejs/bin/node` as a JavaScript file and crashes. `docker logs` shows `SyntaxError: Unexpected token` or `Cannot find module '/nodejs/bin/node'`.
 
-**Fix:** Use exec form (array syntax) and the correct Node path for distroless. The Part 3 Dockerfile already uses the correct form — this is an **illustration only, do not paste** — showing the difference between the broken and fixed line:
+**Fix:** Use exec form (array syntax) with **just the script path** — the distroless nodejs image presets `ENTRYPOINT ["/nodejs/bin/node"]` for you. The Part 3 Dockerfile already uses the correct form — this is an **illustration only, do not paste** — showing the three forms you'll encounter:
 
 > ```dockerfile
-> # Wrong — shell form, silently fails in distroless
+> # Wrong (shell form) — there is no shell in distroless to parse this
 > CMD node src/index.js
 >
-> # Correct — exec form with distroless node path
+> # Wrong (DOUBLE node) — distroless ENTRYPOINT is already /nodejs/bin/node,
+> # so this runs `/nodejs/bin/node /nodejs/bin/node src/index.js` and crashes.
 > CMD ["/nodejs/bin/node", "src/index.js"]
+>
+> # Right — argv only. Combined with the preset ENTRYPOINT this becomes
+> # `/nodejs/bin/node src/index.js`.
+> CMD ["src/index.js"]
 > ```
 
-If your Dockerfile uses the wrong form, re-run the `cat > Dockerfile << 'EOF' ... EOF` block from Part 3 to overwrite it cleanly.
+If your Dockerfile uses one of the wrong forms, re-run the `cat > Dockerfile << 'EOF' ... EOF` block from Part 3 to overwrite it cleanly.
 
-Verify the correct node path in the distroless image:
+Verify the distroless image's preset entrypoint:
 
 ```bash
-docker run --rm gcr.io/distroless/nodejs20-debian12 \
-  /nodejs/bin/node --version
+docker inspect --format '{{.Config.Entrypoint}}' gcr.io/distroless/nodejs20-debian12
+# [/nodejs/bin/node]
+```
+
+```bash
+# Pass --version as argv to the preset ENTRYPOINT (which is /nodejs/bin/node).
+# Do NOT write `/nodejs/bin/node --version` here — that becomes
+# `/nodejs/bin/node /nodejs/bin/node --version` and fails.
+docker run --rm gcr.io/distroless/nodejs20-debian12 --version
 # v20.x.x
 ```
 
@@ -1602,7 +1645,8 @@ COPY src/ ./src/
 COPY package.json ./
 USER nonroot
 EXPOSE 3000
-CMD ["/nodejs/bin/node", "src/index.js"]
+# Distroless presets ENTRYPOINT ["/nodejs/bin/node"]; CMD is argv for it.
+CMD ["src/index.js"]
 
 # ─── Stage 5: debug ───────────────────────────────────────────────────────────
 # :debug variant of distroless ships busybox so `docker exec ... sh` works
@@ -1613,7 +1657,7 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY src/ ./src/
 COPY package.json ./
 USER nonroot
-CMD ["/nodejs/bin/node", "src/index.js"]
+CMD ["src/index.js"]
 EOF
 ```
 
