@@ -167,23 +167,25 @@ Starting from your Day 2 directory, you will add these files:
 ```
 docker-best-practices/
 ├── src/
-│   ├── index.js          ← update: register new routes
-│   ├── db.js             ← new: PostgreSQL connection pool
-│   ├── cache.js          ← new: Redis client
+│   ├── index.js          ← overwrite: register new routes
+│   ├── db.js             ← create: PostgreSQL connection pool
+│   ├── cache.js          ← create: Redis client
 │   ├── routes/
-│   │   ├── health.js     ← update: add /db and /cache checks
-│   │   └── users.js      ← update: PostgreSQL + Redis cache-aside
+│   │   ├── health.js     ← overwrite: add /db and /cache checks
+│   │   └── users.js      ← overwrite: PostgreSQL + Redis cache-aside
 │   └── middleware/
 │       └── errorHandler.js
 ├── db/
-│   └── init.sql          ← new: schema + seed data
+│   └── init.sql          ← create: schema + seed data
 ├── nginx/
-│   └── nginx.conf        ← new: reverse proxy config
+│   └── nginx.conf        ← create: reverse proxy config
 ├── Dockerfile            ← unchanged from Day 2
 ├── .dockerignore         ← unchanged from Day 2
-├── docker-compose.yml    ← replace: full four-service stack
-└── .env.example          ← update: add DB and Redis vars
+├── docker-compose.yml    ← overwrite: full four-service stack
+└── .env.example          ← overwrite: add DB and Redis vars
 ```
+
+> Every file with an `← create` or `← overwrite` annotation below is delivered as a single `cat > path << 'EOF' ... EOF` block — copy the whole block, paste into your terminal once, the file is written. No editor switching, no partial edits.
 
 ---
 
@@ -191,14 +193,17 @@ docker-best-practices/
 
 ### Step 1: Install new dependencies
 
+This adds three packages to your host `package.json` and updates `package-lock.json`. Both files are read by `npm ci` inside the Dockerfile's `dev` stage on the next `docker compose build`, so the Node container picks them up automatically:
+
+- **`pg`** — official PostgreSQL client for Node.js (the `Pool` we use in `src/db.js`).
+- **`ioredis`** — Redis client with automatic reconnection (the `Redis` constructor we use in `src/cache.js`).
+- **`express-async-errors`** — auto-forwards rejected promises in Express 4 route handlers to the error middleware. Without it, an `await` that throws inside a route would hang the request until client timeout. Day 3 uses it as a safety net.
+
 ```bash
 cd docker-best-practices
 
-# PostgreSQL client
-npm install pg
-
-# Redis client (ioredis handles reconnection automatically)
-npm install ioredis
+# Single npm install - one lockfile update, all three deps
+npm install pg ioredis express-async-errors
 ```
 
 Verify they landed in `package.json`:
@@ -207,8 +212,9 @@ Verify they landed in `package.json`:
 node -e "
 const pkg = require('./package.json');
 const deps = Object.keys(pkg.dependencies);
-console.log('pg:', deps.includes('pg') ? 'installed' : 'MISSING');
-console.log('ioredis:', deps.includes('ioredis') ? 'installed' : 'MISSING');
+for (const d of ['pg', 'ioredis', 'express-async-errors']) {
+  console.log(d + ':', deps.includes(d) ? 'installed' : 'MISSING');
+}
 "
 ```
 
@@ -221,9 +227,10 @@ ioredis: installed
 
 ### Step 2: PostgreSQL connection pool
 
-Create `src/db.js`:
+Create `src/db.js` — overwrite anything that's there:
 
-```javascript
+```bash
+cat > src/db.js << 'EOF'
 'use strict';
 
 const { Pool } = require('pg');
@@ -258,13 +265,15 @@ async function query(text, params) {
 }
 
 module.exports = { pool, query };
+EOF
 ```
 
 ### Step 3: Redis client
 
 Create `src/cache.js`:
 
-```javascript
+```bash
+cat > src/cache.js << 'EOF'
 'use strict';
 
 const Redis = require('ioredis');
@@ -272,7 +281,7 @@ const Redis = require('ioredis');
 const redis = new Redis(process.env.REDIS_URL || 'redis://localhost:6379', {
   maxRetriesPerRequest: 3,
   retryStrategy(times) {
-    // Exponential backoff: 100ms, 200ms, 400ms, …, max 3s
+    // Exponential backoff: 100ms, 200ms, 400ms, ..., max 3s
     return Math.min(times * 100, 3000);
   },
   lazyConnect: true,
@@ -282,13 +291,15 @@ redis.on('connect', () => console.log('Redis: connected'));
 redis.on('error',   (err) => console.error('Redis error:', err.message));
 
 module.exports = { redis };
+EOF
 ```
 
-### Step 4: Update the health route
+### Step 4: Overwrite the health route
 
-Replace `src/routes/health.js` to add `/health/db` and `/health/cache` endpoints:
+Overwrite `src/routes/health.js` to add `/health/db` and `/health/cache` endpoints. The basic `/health` stays as the liveness probe (Compose's health check hits this one), and the two new endpoints are readiness probes you'll plug into Kubernetes in a later day:
 
-```javascript
+```bash
+cat > src/routes/health.js << 'EOF'
 'use strict';
 
 const { Router } = require('express');
@@ -297,7 +308,9 @@ const { redis }  = require('../cache');
 
 const router = Router();
 
-// Basic liveness — does not check dependencies
+// Liveness — does NOT check dependencies. The Compose health check below
+// uses this. If a transient PG/Redis outage flipped this to 503 the
+// container would be restarted every retry-window, which we don't want.
 router.get('/', (req, res) => {
   res.json({
     status:      'healthy',
@@ -309,7 +322,7 @@ router.get('/', (req, res) => {
 
 router.get('/ready', (req, res) => res.json({ status: 'ready' }));
 
-// Deep health: PostgreSQL
+// Readiness: PostgreSQL
 router.get('/db', async (req, res) => {
   try {
     const { rows } = await pool.query('SELECT 1 AS ok');
@@ -319,7 +332,7 @@ router.get('/db', async (req, res) => {
   }
 });
 
-// Deep health: Redis
+// Readiness: Redis
 router.get('/cache', async (req, res) => {
   try {
     const pong = await redis.ping();
@@ -330,13 +343,15 @@ router.get('/cache', async (req, res) => {
 });
 
 module.exports = { healthRouter: router };
+EOF
 ```
 
-### Step 5: Update the users route to use PostgreSQL + Redis
+### Step 5: Overwrite the users route to use PostgreSQL + Redis
 
-Replace `src/routes/users.js`:
+Overwrite `src/routes/users.js`:
 
-```javascript
+```bash
+cat > src/routes/users.js << 'EOF'
 'use strict';
 
 const { Router } = require('express');
@@ -355,64 +370,80 @@ const UserSchema = z.object({
   role:  z.enum(['admin', 'user', 'viewer']).default('user'),
 });
 
-// GET /api/users — cache-aside: check Redis, fall back to PostgreSQL
-router.get('/', async (req, res) => {
-  // 1. Try cache
-  const cached = await redis.get(CACHE_KEY).catch(() => null);
-  if (cached) {
-    return res.json({ users: JSON.parse(cached), source: 'cache' });
-  }
+// GET /api/users - cache-aside: check Redis, fall back to PostgreSQL.
+// Express 4 doesn't propagate async errors automatically, so each route
+// is wrapped in try/catch and any failure is forwarded to the error
+// handler in src/index.js. (Alternative: `npm i express-async-errors`
+// and require it once at the top of src/index.js to make this implicit.)
+router.get('/', async (req, res, next) => {
+  try {
+    // 1. Try cache
+    const cached = await redis.get(CACHE_KEY).catch(() => null);
+    if (cached) {
+      return res.json({ users: JSON.parse(cached), source: 'cache' });
+    }
 
-  // 2. Cache miss — query database
-  const { rows } = await query(
-    'SELECT id, name, email, role, created_at FROM users ORDER BY id'
-  );
+    // 2. Cache miss - query database
+    const { rows } = await query(
+      'SELECT id, name, email, role, created_at FROM users ORDER BY id'
+    );
 
-  // 3. Populate cache for next request
-  await redis.setex(CACHE_KEY, CACHE_TTL, JSON.stringify(rows)).catch(() => null);
+    // 3. Populate cache for next request
+    await redis.setex(CACHE_KEY, CACHE_TTL, JSON.stringify(rows)).catch(() => null);
 
-  res.json({ users: rows, source: 'database' });
+    res.json({ users: rows, source: 'database' });
+  } catch (err) { next(err); }
 });
 
 // GET /api/users/:id
-router.get('/:id', async (req, res) => {
-  const { rows } = await query(
-    'SELECT id, name, email, role, created_at FROM users WHERE id = $1',
-    [req.params.id]
-  );
-  if (rows.length === 0) {
-    return res.status(404).json({ error: 'User not found' });
-  }
-  res.json(rows[0]);
+router.get('/:id', async (req, res, next) => {
+  try {
+    const { rows } = await query(
+      'SELECT id, name, email, role, created_at FROM users WHERE id = $1',
+      [req.params.id]
+    );
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    res.json(rows[0]);
+  } catch (err) { next(err); }
 });
 
 // POST /api/users
-router.post('/', async (req, res) => {
-  const result = UserSchema.safeParse(req.body);
-  if (!result.success) {
-    return res.status(400).json({ error: 'Validation failed', details: result.error.flatten() });
-  }
-  const { name, email, role } = result.data;
-  const { rows } = await query(
-    'INSERT INTO users (name, email, role) VALUES ($1, $2, $3) RETURNING *',
-    [name, email, role]
-  );
+router.post('/', async (req, res, next) => {
+  try {
+    const result = UserSchema.safeParse(req.body);
+    if (!result.success) {
+      return res.status(400).json({ error: 'Validation failed', details: result.error.flatten() });
+    }
+    const { name, email, role } = result.data;
+    const { rows } = await query(
+      'INSERT INTO users (name, email, role) VALUES ($1, $2, $3) RETURNING *',
+      [name, email, role]
+    );
 
-  // Bust the list cache so the next GET reflects the new user
-  await redis.del(CACHE_KEY).catch(() => null);
+    // Bust the list cache so the next GET reflects the new user
+    await redis.del(CACHE_KEY).catch(() => null);
 
-  res.status(201).json(rows[0]);
+    res.status(201).json(rows[0]);
+  } catch (err) { next(err); }
 });
 
 module.exports = { usersRouter: router };
+EOF
 ```
 
-### Step 6: Update index.js to connect on startup
+### Step 6: Overwrite index.js to connect on startup
 
-Replace `src/index.js`:
+Overwrite `src/index.js`:
 
-```javascript
+```bash
+cat > src/index.js << 'EOF'
 'use strict';
+
+// Forwards rejected promises from async route handlers to the error
+// middleware automatically. Must be required BEFORE express() is created.
+require('express-async-errors');
 
 const express = require('express');
 const helmet  = require('helmet');
@@ -455,7 +486,7 @@ async function start() {
   });
 
   const shutdown = (signal) => {
-    console.log(`${signal} received — shutting down`);
+    console.log(`${signal} received - shutting down`);
     server.close(async () => {
       await pool.end();
       redis.disconnect();
@@ -473,6 +504,7 @@ start().catch((err) => {
 });
 
 module.exports = { app };
+EOF
 ```
 
 ---
@@ -487,7 +519,8 @@ mkdir -p db
 
 Create `db/init.sql`:
 
-```sql
+```bash
+cat > db/init.sql << 'EOF'
 -- Users table
 CREATE TABLE IF NOT EXISTS users (
   id         SERIAL       PRIMARY KEY,
@@ -498,7 +531,7 @@ CREATE TABLE IF NOT EXISTS users (
   created_at TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
 
--- Seed data — ON CONFLICT DO NOTHING makes this safe to re-run
+-- Seed data - ON CONFLICT DO NOTHING makes this safe to re-run
 INSERT INTO users (name, email, role) VALUES
   ('Alice', 'alice@example.com', 'admin'),
   ('Bob',   'bob@example.com',   'user'),
@@ -507,6 +540,7 @@ ON CONFLICT (email) DO NOTHING;
 
 -- Index on email for lookups
 CREATE INDEX IF NOT EXISTS users_email_idx ON users (email);
+EOF
 ```
 
 > PostgreSQL runs every file in `/docker-entrypoint-initdb.d/` in alphabetical order — but only on the **first** start when the data directory is empty. Subsequent restarts skip the init scripts. This means seed data persists across restarts once written.
@@ -523,19 +557,24 @@ mkdir -p nginx
 
 Create `nginx/nginx.conf`:
 
-```nginx
+```bash
+cat > nginx/nginx.conf << 'EOF'
 events {
     worker_connections 1024;
 }
 
 http {
-    # Upstream block — Docker DNS resolves "app" to the app container's IP
+    # Upstream block - Docker DNS resolves "app" to the app container's IP.
+    # CAVEAT: Nginx resolves the upstream host ONCE at startup and caches
+    # the IP. If you restart the app container later, you must also
+    # `docker compose restart nginx` to flush the stale IP (see Error 7
+    # in the troubleshooting section).
     upstream app_server {
         server app:3000;
         keepalive 32;
     }
 
-    # Rate limiting — 100 requests/second per IP, burst of 20
+    # Rate limiting - 100 requests/second per IP, burst of 20
     limit_req_zone $binary_remote_addr zone=api:10m rate=100r/s;
 
     server {
@@ -571,20 +610,21 @@ http {
             proxy_send_timeout    90s;
         }
 
-        # Health check endpoint — skip access logs so they don't fill up
+        # Health check endpoint - skip access logs so they don't fill up
         location = /health {
             proxy_pass http://app_server/health;
             access_log off;
         }
     }
 }
+EOF
 ```
 
 ---
 
 ## Part 4: Environment variables
 
-Update `.env.example`:
+Overwrite `.env.example` with the full Day 3 set of variables (the existing Day 2 version is replaced entirely — copy the whole block):
 
 ```bash
 cat > .env.example << 'EOF'
@@ -613,16 +653,17 @@ cp .env.example .env
 
 ## Part 5: The complete docker-compose.yml
 
-This is the heart of the article. Replace the existing `docker-compose.yml` entirely:
+This is the heart of the article. Overwrite `docker-compose.yml` entirely.
 
-```yaml
-version: '3.9'
+**Note:** Compose v2 (the plugin you installed) ignores the legacy `version:` key and prints a deprecation warning if it's present, so we omit it. The Nginx service has its own health check (using `wget` from the alpine image) so the whole chain — Postgres + Redis → app → Nginx — is gated by real probes:
 
-# ─── Services ─────────────────────────────────────────────────────────────────
+```bash
+cat > docker-compose.yml << 'EOF'
+# ── Services ─────────────────────────────────────────────────────────────────
 
 services:
 
-  # ── Nginx ──────────────────────────────────────────────────────────────────
+  # -- Nginx --------------------------------------------------------------
   nginx:
     image: nginx:1.25-alpine
     container_name: dev-nginx
@@ -634,10 +675,17 @@ services:
     depends_on:
       app:
         condition: service_healthy  # Wait until app passes its health check
+    # wget is in nginx:alpine; curl is not. -q quiet, --spider HEAD-only.
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     networks:
       - app-network
 
-  # ── Node.js Application ────────────────────────────────────────────────────
+  # -- Node.js Application ------------------------------------------------
   app:
     build:
       context: .
@@ -646,7 +694,7 @@ services:
     container_name: dev-app
     restart: unless-stopped
     expose:
-      - "3000"               # Internal only — Nginx proxies to this
+      - "3000"               # Internal only - Nginx proxies to this
     volumes:
       - ./src:/app/src:ro    # Bind mount: file changes without rebuild
       - node_modules:/app/node_modules
@@ -676,7 +724,7 @@ services:
     networks:
       - app-network
 
-  # ── PostgreSQL ─────────────────────────────────────────────────────────────
+  # -- PostgreSQL ---------------------------------------------------------
   postgres:
     image: postgres:16-alpine
     container_name: dev-postgres
@@ -697,18 +745,15 @@ services:
     networks:
       - app-network
 
-  # ── Redis ──────────────────────────────────────────────────────────────────
+  # -- Redis --------------------------------------------------------------
+  # `command:` overrides the image default. We leave Redis's default RDB
+  # snapshot schedule alone (multiple save points - see redis docs) and
+  # only tune logging, so cache survives restarts without aggressive disk I/O.
   redis:
     image: redis:7-alpine
     container_name: dev-redis
     restart: unless-stopped
-    command:
-      - redis-server
-      - --save          # Snapshot: if 1 key changed in 60s, write to disk
-      - "60"
-      - "1"
-      - --loglevel
-      - warning
+    command: ["redis-server", "--loglevel", "warning"]
     volumes:
       - redis_data:/data
     healthcheck:
@@ -720,19 +765,20 @@ services:
     networks:
       - app-network
 
-# ─── Volumes ──────────────────────────────────────────────────────────────────
+# ── Volumes ──────────────────────────────────────────────────────────────────
 
 volumes:
-  postgres_data:    # PostgreSQL data files — persist across container restarts
-  redis_data:       # Redis RDB snapshots — cache survives restarts
+  postgres_data:    # PostgreSQL data files - persist across container restarts
+  redis_data:       # Redis RDB snapshots - cache survives restarts
   node_modules:     # Prevents host node_modules from shadowing container ones
 
-# ─── Networks ─────────────────────────────────────────────────────────────────
+# ── Networks ─────────────────────────────────────────────────────────────────
 
 networks:
   app-network:
-    driver: bridge  # Default bridge with automatic DNS — containers reach each
+    driver: bridge  # Default bridge with automatic DNS - containers reach each
                     # other by service name (postgres, redis, app, nginx)
+EOF
 ```
 
 ---
@@ -896,6 +942,15 @@ When a `POST /api/users` creates a new user, the route immediately calls `redis.
 
 ### Start the stack
 
+If you've previously run any other Compose project in this directory (or attempted Day 3 once already), wipe any stale named volumes first. The `node_modules` named volume is shared by name across runs — if an old, empty volume exists, it will shadow the freshly-installed `node_modules` inside the image and you'll see `nodemon: not found` on first start:
+
+```bash
+# Idempotent: safe to run even if no stack exists yet.
+docker compose down -v 2>/dev/null || true
+```
+
+Now bring the stack up. `--build` forces a rebuild so the `dev` image picks up your latest `package.json` (with `pg`, `ioredis`, and `express-async-errors`):
+
 ```bash
 docker compose up --build
 ```
@@ -930,7 +985,7 @@ Expected output:
 ```
 NAME           IMAGE                  STATUS                   PORTS
 dev-nginx      nginx:1.25-alpine      Up 12 seconds            0.0.0.0:80->80/tcp
-dev-app        docker-best-p-app      Up 23 seconds (healthy)  3000/tcp
+dev-app        docker-best-practices-app   Up 23 seconds (healthy)  3000/tcp
 dev-postgres   postgres:16-alpine     Up 35 seconds (healthy)  5432/tcp
 dev-redis      redis:7-alpine         Up 35 seconds (healthy)  6379/tcp
 ```
@@ -941,7 +996,7 @@ PostgreSQL, Redis, and the app must show `(healthy)`. Nginx does not have a heal
 
 ```bash
 # Liveness check through Nginx
-curl -s http://localhost/health | python3 -m json.tool
+curl -s http://localhost/health | jq .
 ```
 
 Expected:
@@ -957,7 +1012,7 @@ Expected:
 
 ```bash
 # Deep database check
-curl -s http://localhost/health/db | python3 -m json.tool
+curl -s http://localhost/health/db | jq .
 ```
 
 Expected:
@@ -973,7 +1028,7 @@ Expected:
 
 ```bash
 # Deep Redis check
-curl -s http://localhost/health/cache | python3 -m json.tool
+curl -s http://localhost/health/cache | jq .
 ```
 
 Expected:
@@ -987,7 +1042,7 @@ Expected:
 
 ```bash
 # List users — first call hits PostgreSQL
-curl -s http://localhost/api/users | python3 -m json.tool
+curl -s http://localhost/api/users | jq .
 ```
 
 Expected:
@@ -1023,7 +1078,7 @@ Expected:
 
 ```bash
 # Second call — served from Redis cache
-curl -s http://localhost/api/users | python3 -m json.tool
+curl -s http://localhost/api/users | jq .
 ```
 
 Notice `"source": "cache"` in the response — Redis answered instead of PostgreSQL.
@@ -1033,7 +1088,7 @@ Notice `"source": "cache"` in the response — Redis answered instead of Postgre
 curl -s -X POST http://localhost/api/users \
   -H "Content-Type: application/json" \
   -d '{"name":"Dave","email":"dave@example.com","role":"viewer"}' \
-  | python3 -m json.tool
+  | jq .
 ```
 
 Expected:
@@ -1050,25 +1105,64 @@ Expected:
 
 ```bash
 # Cache was busted — this hits PostgreSQL again and returns all 4 users
-curl -s http://localhost/api/users | python3 -m json.tool
+curl -s http://localhost/api/users | jq .
 ```
 
 ### Test hot reload
 
-Edit a source file without rebuilding:
+Edit a source file without rebuilding. **Overwrite** `src/routes/health.js` with a copy that has a different status string — works identically on Linux and macOS, no `sed` portability issues:
 
 ```bash
-# In a second terminal — change the health response
-sed -i "s/'healthy'/'all-systems-go'/" src/routes/health.js
+cat > src/routes/health.js << 'EOF'
+'use strict';
 
-# Nodemon restarts automatically — watch the compose logs
-# Then verify
+const { Router } = require('express');
+const { pool }   = require('../db');
+const { redis }  = require('../cache');
+
+const router = Router();
+
+router.get('/', (req, res) => {
+  res.json({
+    status:      'all-systems-go',
+    timestamp:   new Date().toISOString(),
+    uptime:      Math.floor(process.uptime()),
+    environment: process.env.NODE_ENV || 'development',
+  });
+});
+
+router.get('/ready', (req, res) => res.json({ status: 'ready' }));
+
+router.get('/db', async (req, res) => {
+  try {
+    const { rows } = await pool.query('SELECT 1 AS ok');
+    res.json({ status: 'healthy', result: rows[0] });
+  } catch (err) {
+    res.status(503).json({ status: 'unhealthy', error: err.message });
+  }
+});
+
+router.get('/cache', async (req, res) => {
+  try {
+    const pong = await redis.ping();
+    res.json({ status: 'healthy', response: pong });
+  } catch (err) {
+    res.status(503).json({ status: 'unhealthy', error: err.message });
+  }
+});
+
+module.exports = { healthRouter: router };
+EOF
+```
+
+Nodemon detects the change inside the container and restarts. Verify the new status string:
+
+```bash
 curl -s http://localhost/health | grep status
 # "status": "all-systems-go"
-
-# Revert
-sed -i "s/'all-systems-go'/'healthy'/" src/routes/health.js
 ```
+
+Revert by overwriting `src/routes/health.js` again with the original `'healthy'` status — rerun the `cat > src/routes/health.js << 'EOF' ... EOF` block from **Step 4** earlier (Part 1) and nodemon will pick it up again.
 
 ### Verify data persistence across restarts
 
@@ -1080,7 +1174,7 @@ docker compose restart app
 docker compose ps
 
 # Users are still there — PostgreSQL data persisted
-curl -s http://localhost/api/users | python3 -m json.tool
+curl -s http://localhost/api/users | jq .
 ```
 
 ### Connect directly to PostgreSQL (optional)
@@ -1169,12 +1263,19 @@ dev-app | Error: connect ECONNREFUSED 172.18.0.3:5432
 
 **Cause:** The health check passes before PostgreSQL is fully ready to accept TCP connections (rare but possible on slow machines).
 
-**Fix:** Increase `start_period` for the PostgreSQL health check:
+**Fix:** Increase `start_period` for the PostgreSQL health check from 30s to 60s. **Illustration only — do not paste**; the change is one field inside the existing `postgres:` block in your `docker-compose.yml`:
 
-```yaml
-healthcheck:
-  start_period: 60s   # was 30s
-```
+> ```yaml
+> postgres:
+>   healthcheck:
+>     test: ["CMD-SHELL", "pg_isready -U appuser -d appdb"]
+>     interval: 10s
+>     timeout: 5s
+>     retries: 5
+>     start_period: 60s   # was 30s — give Postgres more time on slow disks
+> ```
+
+Either edit `docker-compose.yml` directly to change just that one line, or re-run the full `cat > docker-compose.yml << 'EOF' ... EOF` block from Part 5 with `start_period: 60s` substituted in the postgres healthcheck.
 
 ---
 
@@ -1212,10 +1313,10 @@ dev-app | error: relation "users" does not exist
 
 **Cause:** PostgreSQL only runs init scripts on first start (when the data directory is empty). If you previously started the postgres container without the init script, the volume has data and the script is skipped.
 
-**Fix:** Remove the postgres volume to force a fresh initialisation:
+**Fix:** Remove the postgres volume to force a fresh initialisation. **Warning: `-v` wipes every named volume** — any users you POSTed (Dave, etc.) and any Redis cache state will be lost. Re-seed by re-running the POST examples above after the stack comes back up:
 
 ```bash
-docker compose down -v          # -v removes named volumes
+docker compose down -v          # -v removes named volumes (DESTRUCTIVE)
 docker compose up --build       # fresh start — init.sql will run
 ```
 
@@ -1248,13 +1349,53 @@ REDIS_URL=redis://redis:6379
 # (no restart when files change)
 ```
 
-**Cause:** Linux kernel doesn't propagate inotify events to containers by default in some configurations.
+**Cause:** Linux kernel doesn't propagate inotify events to containers by default in some configurations (especially Docker on remote VMs or some WSL2 setups).
 
-**Fix:** Add `--legacy-watch` to the nodemon command in `docker-compose.yml`:
+**Fix:** Drop a `nodemon.json` into the project root — nodemon picks it up automatically without you touching `docker-compose.yml`:
 
-```yaml
-command: ["node_modules/.bin/nodemon", "--legacy-watch", "--watch", "src", "src/index.js"]
+```bash
+cat > nodemon.json << 'EOF'
+{
+  "watch": ["src"],
+  "ext": "js,json",
+  "legacy-watch": true,
+  "delay": 500
+}
+EOF
 ```
+
+Then restart the stack so the dev container sees the new file:
+
+```bash
+docker compose down
+docker compose up --build
+```
+
+The `legacy-watch: true` flag switches nodemon from inotify (event-driven) to polling (500ms tick), which works in every Docker configuration.
+
+---
+
+### Error 7: 502 Bad Gateway after restarting the app container
+
+```
+$ curl -s http://localhost/health
+<html><head><title>502 Bad Gateway</title></head>...
+```
+
+```
+dev-nginx | [error] connect() failed (111: Connection refused) while connecting to upstream
+```
+
+**Cause:** Nginx resolves the `upstream app_server { server app:3000; }` directive **once at startup** and caches the IP. When you run `docker compose restart app`, Docker assigns the rebooted container a new IP. Nginx keeps proxying to the old, no-longer-routable IP and returns 502 until it's restarted too.
+
+**Fix:** Restart nginx after the app:
+
+```bash
+docker compose restart app
+docker compose restart nginx
+```
+
+For a more robust setup that survives container restarts, replace the upstream with a `set $upstream_app app:3000;` + `resolver 127.0.0.11 valid=10s;` pattern (Docker's embedded DNS lives at `127.0.0.11`) — but that's overkill for a dev compose file and is covered in the Day 7 Ingress article.
 
 ---
 
