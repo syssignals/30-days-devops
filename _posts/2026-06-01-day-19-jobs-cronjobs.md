@@ -730,6 +730,6 @@ The cluster now has both **workloads** and **operations** declared as Kubernetes
 
 ## What's next
 
-[Day 20: DaemonSets — One Pod per Node, for Real Per-Node Concerns →](/articles/2026/06/02/day-20-daemonsets/)
+[Day 20: DaemonSets — One Pod per Node, for Real Per-Node Concerns →](/articles/2026/06/07/day-20-daemonsets/)
 
 On Day 20 you will meet the fourth workload type to round out the taxonomy: the **DaemonSet**. A Deployment runs N replicas wherever the scheduler likes; a DaemonSet runs **exactly one Pod on every node that matches a selector**. You will deploy a simple `node-info` agent as a DaemonSet, watch a new Pod appear automatically when you add a node (`kind create cluster --add-node`), and walk through the real-world DaemonSets already running on your cluster — kindnet, kube-proxy, and the Day 9 Promtail log shipper. Plus a careful look at **taints, tolerations, and `nodeSelector`** so a DaemonSet that should not run on the control-plane stays off it.
