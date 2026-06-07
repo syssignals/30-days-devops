@@ -79,7 +79,6 @@ Expected output:
 ```text
 Docker version 26.1.4, build 5650f9b
 Client Version: v1.29.4
-Kustomize Version: v5.0.4-0.20230601165947-6ce0bf390ce3
 kind version 0.23.0
 ```
 
@@ -118,12 +117,18 @@ kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 nodes:
   - role: control-plane
+    # Pin the node image to the Kubernetes minor version this article targets.
+    # kind 0.23's default is v1.30.0; we want 1.29.4 to match the kubectl 1.29
+    # in the prereqs table and the rollout/probe behaviour shown throughout.
+    image: kindest/node:v1.29.4
     extraPortMappings:
       - containerPort: 30080
         hostPort: 30080
         protocol: TCP
   - role: worker
+    image: kindest/node:v1.29.4
   - role: worker
+    image: kindest/node:v1.29.4
 EOF
 ```
 
@@ -139,7 +144,7 @@ Expected output:
 
 ```text
 Creating cluster "devops-cluster" ...
- ✓ Ensuring node image (kindest/node:v1.29.2) 🖼
+ ✓ Ensuring node image (kindest/node:v1.29.4) 🖼
  ✓ Preparing nodes 📦 📦 📦
  ✓ Writing configuration 📜
  ✓ Starting control-plane 🕹️
@@ -164,9 +169,9 @@ Expected output:
 
 ```text
 NAME                           STATUS   ROLES           AGE   VERSION
-devops-cluster-control-plane   Ready    control-plane   60s   v1.29.2
-devops-cluster-worker          Ready    <none>          35s   v1.29.2
-devops-cluster-worker2         Ready    <none>          35s   v1.29.2
+devops-cluster-control-plane   Ready    control-plane   60s   v1.29.4
+devops-cluster-worker          Ready    <none>          35s   v1.29.4
+devops-cluster-worker2         Ready    <none>          35s   v1.29.4
 ```
 
 All three nodes show `Ready`. The control-plane runs the Kubernetes brain (API server, scheduler, controller manager, etcd). The workers run your application pods.
@@ -554,7 +559,7 @@ The `1/1` in the `READY` column means 1 of 1 containers are passing their readin
 Inspect the probes on a running pod:
 
 ```bash
-kubectl describe pod $(kubectl get pods -l app=webapp -o name | head -1) | grep -A 10 "Liveness\|Readiness"
+kubectl describe pod $(kubectl get pods -l app=webapp -o name | head -1) | grep -E "Liveness:|Readiness:"
 ```
 
 Expected output:
@@ -605,14 +610,14 @@ NAME                      READY   STATUS              RESTARTS   AGE
 webapp-6b8d9c7f5-j3k4l   1/1     Running             0          3m
 webapp-6b8d9c7f5-n7p8q   1/1     Running             0          3m
 webapp-6b8d9c7f5-r2s5t   1/1     Running             0          3m
-webapp-8f9a1b2c6-x4y5z   0/1     ContainerCreating   0          4s
-webapp-8f9a1b2c6-x4y5z   1/1     Running             0          12s
+webapp-8f9a1b2c6-q4w7t   0/1     ContainerCreating   0          4s
+webapp-8f9a1b2c6-q4w7t   1/1     Running             0          12s
 webapp-6b8d9c7f5-j3k4l   1/1     Terminating         0          3m
-webapp-8f9a1b2c6-a7b8c   0/1     ContainerCreating   0          2s
-webapp-8f9a1b2c6-a7b8c   1/1     Running             0          10s
+webapp-8f9a1b2c6-m5p2k   0/1     ContainerCreating   0          2s
+webapp-8f9a1b2c6-m5p2k   1/1     Running             0          10s
 webapp-6b8d9c7f5-n7p8q   1/1     Terminating         0          3m
-webapp-8f9a1b2c6-d1e2f   0/1     ContainerCreating   0          2s
-webapp-8f9a1b2c6-d1e2f   1/1     Running             0          11s
+webapp-8f9a1b2c6-x7n3v   0/1     ContainerCreating   0          2s
+webapp-8f9a1b2c6-x7n3v   1/1     Running             0          11s
 webapp-6b8d9c7f5-r2s5t   1/1     Terminating         0          3m
 ```
 
@@ -669,12 +674,11 @@ Expected output:
 ```text
 deployment.apps/webapp
 REVISION  CHANGE-CAUSE
-1         <none>
 2         <none>
 3         <none>
 ```
 
-> **Note:** `kubectl rollout undo` does **not** delete revision 2 — it creates a new revision 3 whose spec is identical to revision 1. All three revisions remain in history. Use `--record` flag when applying to populate the `CHANGE-CAUSE` column with your command.
+> **Note:** Revision 1 is **gone from the listing — that's not a bug**. Kubernetes deduplicates the history by the pod-template hash of the ReplicaSet backing each revision. When you ran `rollout undo`, the controller re-promoted the original revision-1 ReplicaSet and re-stamped it with the next revision number (3), so it now appears under that newer number only. Revision 2 (the `nginx:1.27-alpine` version) stays around as a rollback target. To populate the `CHANGE-CAUSE` column with meaningful text, annotate before the rollout: `kubectl annotate deployment/webapp kubernetes.io/change-cause="rollback to 1.25-alpine" --overwrite`.
 
 ### How the rolling update works
 
@@ -812,18 +816,20 @@ NAME                      READY   STATUS    RESTARTS   AGE
 webapp-7d6f8b9c4-h2k9p   0/1     Pending   0          2m
 ```
 
-**Cause:** Usually insufficient memory allocated to Docker Desktop.
+**Cause:** Usually insufficient memory available to the kind cluster's container runtime.
 
 **Fix:**
 
 ```bash
-# Check why the pod is pending
-kubectl describe pod webapp-7d6f8b9c4-h2k9p | grep -A 5 Events
-
-# Common output: 0/3 nodes are available: 3 Insufficient memory
-# Fix: Docker Desktop -> Settings -> Resources -> increase Memory to 4GB+
-# Or reduce resource requests in deployment.yaml
+# Check why the pod is pending — works for any pod regardless of suffix
+kubectl describe pod -l app=webapp | grep -A 5 Events | head -20
 ```
+
+Common output: `0/3 nodes are available: 3 Insufficient memory`.
+
+- **macOS / Windows (Docker Desktop):** Docker Desktop → Settings → Resources → Memory → at least **4 GB** (6 GB recommended for later days). Apply & Restart.
+- **Linux (Docker Engine, no Docker Desktop):** the host kernel governs memory directly — check `free -h` and free up RAM, or lower the `resources.requests` values in `deployment.yaml` and re-apply.
+- Alternatively, reduce `replicas` from 3 to 2 in `deployment.yaml` and re-apply (`kubectl apply -f deployment.yaml`).
 
 ---
 
@@ -839,13 +845,13 @@ webapp-7d6f8b9c4-h2k9p   0/1     ImagePullBackOff   0          30s
 **Fix:**
 
 ```bash
-# Check the exact error
-kubectl describe pod webapp-7d6f8b9c4-h2k9p | grep -A 3 "Warning"
+# Check the exact error on any webapp pod (no hardcoded suffix)
+kubectl describe pod -l app=webapp | grep -A 3 "Warning" | head -20
 
 # Pull the image manually to confirm it exists
 docker pull nginx:1.25-alpine
 
-# If rate limited, log in to Docker Hub
+# If you hit a Docker Hub rate limit, log in (free account is enough)
 docker login
 ```
 
@@ -863,14 +869,16 @@ webapp-6b8d9c7f5-j3k4l   0/1     Running   0          20s
 **Fix:**
 
 ```bash
-# Check probe events on the pod
-kubectl describe pod webapp-6b8d9c7f5-j3k4l | grep -A 5 "Readiness"
+# Inspect probe events on any webapp pod (no hardcoded pod name)
+kubectl describe pod -l app=webapp | grep -E -A 5 "Readiness:|Warning" | head -30
 
-# If endpoint is wrong, update the path in deployment.yaml
-# If just slow to start, increase initialDelaySeconds
+# If the endpoint is wrong: edit deployment.yaml, then re-apply it with
+#   kubectl apply -f deployment.yaml
+# If the app is just slow to start: bump initialDelaySeconds (e.g. 5 -> 15)
+# in deployment.yaml and re-apply.
 
-# Watch until ready
-kubectl get pods -w
+# Watch until all webapp pods are ready
+kubectl get pods -l app=webapp -w
 ```
 
 ---
