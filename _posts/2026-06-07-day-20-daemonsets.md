@@ -98,18 +98,18 @@ This article continues from Day 19. Required state:
 Pre-flight check:
 
 ```bash
-# Confirm three nodes and read the taints column — `<none>` for workers,
-# at least `node-role.kubernetes.io/control-plane:NoSchedule` on the control-plane.
-kubectl get nodes -o custom-columns=NAME:.metadata.name,ROLES:.metadata.labels."kubernetes\.io/role",TAINTS:.spec.taints
+# Confirm three nodes and read each node's taints — `<none>` for workers,
+# `node-role.kubernetes.io/control-plane:NoSchedule` on the control-plane.
+kubectl get nodes -o custom-columns=NAME:.metadata.name,TAINTS:.spec.taints
 ```
 
 Expected output:
 
 ```text
-NAME                           ROLES         TAINTS
-devops-cluster-control-plane   <none>        [map[effect:NoSchedule key:node-role.kubernetes.io/control-plane]]
-devops-cluster-worker          <none>        <none>
-devops-cluster-worker2         <none>        <none>
+NAME                           TAINTS
+devops-cluster-control-plane   [map[effect:NoSchedule key:node-role.kubernetes.io/control-plane]]
+devops-cluster-worker          <none>
+devops-cluster-worker2         <none>
 ```
 
 The `NoSchedule` taint on the control-plane is what every Pod must tolerate (or be denied scheduling). The two workers have no taints, so any Pod can land on them.
@@ -173,13 +173,13 @@ kubectl get daemonset -n kube-system kindnet \
   -o jsonpath='{range .spec.template.spec.tolerations[*]}{.key}{":"}{.effect}{" "}{end}{"\n"}'
 ```
 
-Expected output:
+Expected output (the exact toleration list varies slightly across kind releases — the constant is at least one catch-all entry):
 
 ```text
 :NoSchedule
 ```
 
-An empty `key` with `effect: NoSchedule` is a **catch-all toleration** — it matches *every* `NoSchedule` taint on every node, which is the right thing for cluster-critical infrastructure that must run absolutely everywhere. Application DaemonSets should usually be more targeted (Part 3).
+An empty `key` with `effect: NoSchedule` is a **catch-all toleration** — it matches *every* `NoSchedule` taint on every node, which is the right thing for cluster-critical infrastructure that must run absolutely everywhere. (Some kind releases add a second catch-all for `NoExecute` too; if your output shows `:NoSchedule :NoExecute`, that is the same idea applied to both effects.) Application DaemonSets should usually be more targeted (Part 3).
 
 ---
 
@@ -246,10 +246,18 @@ spec:
             - -c
             - |
               # Read node-level facts via the read-only host mounts.
+              # Note: the fallback is a separate statement, NOT a `||` on the
+              # pipeline — a pipeline's exit status is the LAST command's
+              # (sed exits 0 even when grep matched nothing), so `pipeline
+              # || echo fallback` would never fire.
               CPU_MODEL=$(grep -m1 'model name' /host/proc/cpuinfo \
-                           | sed 's/^.*: //' || echo unknown)
+                           | sed 's/^.*: //')
+              # x86 cpuinfo has "model name"; ARM cpuinfo (e.g. kind on an
+              # Apple Silicon Mac) does not — fall back to the architecture.
+              [ -n "$CPU_MODEL" ] || CPU_MODEL=$(uname -m)
               OS_PRETTY=$(grep -m1 PRETTY_NAME /host/etc/os-release \
-                            | sed 's/^.*="\(.*\)"$/\1/' || echo unknown)
+                            | sed 's/^.*="\(.*\)"$/\1/')
+              [ -n "$OS_PRETTY" ] || OS_PRETTY=unknown
               while true; do
                 echo "$(date -u +%FT%TZ) pod=$POD_NAME node=$NODE_NAME os=\"$OS_PRETTY\" cpu=\"$CPU_MODEL\""
                 sleep 30
@@ -323,13 +331,13 @@ POD=$(kubectl get pod -n agents -l app=node-info \
 kubectl logs -n agents "$POD" | head -2
 ```
 
-Expected output:
+Expected output (the `cpu=` value depends on your machine — an Intel/AMD host shows the CPU model string from `model name`; an Apple Silicon or other ARM host has no `model name` line in cpuinfo, so the fallback prints the architecture, `aarch64`):
 
 ```text
-2026-06-07T11:50:01Z pod=node-info-aaaaa node=devops-cluster-worker os="Debian GNU/Linux 12 (bookworm)" cpu="..."
+2026-06-07T11:50:01Z pod=node-info-aaaaa node=devops-cluster-worker os="Debian GNU/Linux 12 (bookworm)" cpu="aarch64"
 ```
 
-The Pod knows the name of the node it landed on without any external config — that is the downward API at work.
+The Pod knows the name of the node it landed on without any external config — that is the downward API at work. And the `os=` line shows Debian regardless of your laptop's OS, because each kind "node" is a Debian-based container image (`kindest/node`) — the DaemonSet is reporting the node's identity, not your machine's.
 
 ---
 
@@ -342,8 +350,11 @@ The Pod knows the name of the node it landed on without any external config — 
       tolerations:
         # Tolerate the standard control-plane NoSchedule taint so that
         # the scheduler is allowed to place this DaemonSet's Pod on the
-        # control-plane node. Match the key and effect; no `operator`
-        # field means Exists (any value is fine — the taint has none).
+        # control-plane node. `operator: Exists` matches the taint by key
+        # alone, ignoring the value (this taint has none). Set it
+        # explicitly: if you OMIT the operator it defaults to `Equal`,
+        # which also compares values — fine here (both empty), but a
+        # frequent source of silent mismatches on taints that carry values.
         - key: node-role.kubernetes.io/control-plane
           operator: Exists
           effect: NoSchedule
@@ -565,9 +576,9 @@ kubectl describe node devops-cluster-control-plane | grep -E '^(Taints|Labels)'
 
 **2. New Pods all `Pending` on every node, `Events:` show `FailedScheduling: 0/3 nodes are available: 3 Insufficient cpu`**
 
-Each DaemonSet Pod requests resources; the *sum* across all nodes is what counts on a small cluster. With `requests.cpu: 100m` on three nodes you need 300m of headroom across the cluster.
+DaemonSet scheduling is decided **per node, independently**: each node must have enough free allocatable capacity for *its own* Pod's requests. There is no cluster-wide averaging — a node with only 50m CPU free skips its `requests.cpu: 100m` agent Pod even if the other two nodes have cores to spare. The error above means *every* node individually failed the check (on a small dev machine, all nodes share the same crowded Docker VM, so they tend to fail together).
 
-Fix: lower the per-Pod request (the article uses `10m`), or accept that some nodes will skip the agent until they free capacity.
+Fix: lower the per-Pod request (the article uses `10m`), free capacity on the specific nodes that are failing, or accept that those nodes will skip the agent until they have headroom.
 
 **3. `hostPath` mount fails with `forbidden: violates PodSecurity "restricted"`**
 
@@ -588,7 +599,7 @@ kubectl get pod -n agents -o wide
 # No Pod on devops-cluster-control-plane
 ```
 
-Tolerations have to match the taint **exactly** — the same `key`, the same `effect`, and the same `value` (or `operator: Exists` to wildcard the value). A toleration with `effect: NoExecute` does *not* match a `NoSchedule` taint. A toleration with `operator: Equal` and no `value:` does not match a taint that has no value.
+Tolerations have to match the taint **exactly** — the same `key`, the same `effect`, and the same `value` (or `operator: Exists` to wildcard the value). A toleration with `effect: NoExecute` does *not* match a `NoSchedule` taint. With `operator: Equal` (the default when you omit the field), the values are compared too: two empty values match each other, but `value: "true"` in the toleration will silently fail to match a taint with no value — and vice versa. `operator: Exists` sidesteps value comparison entirely, which is why it is the standard choice for the valueless control-plane taint.
 
 Fix:
 
@@ -600,13 +611,13 @@ kubectl get node devops-cluster-control-plane \
 
 The taint has key `node-role.kubernetes.io/control-plane`, empty value, effect `NoSchedule`. Match it with `key: node-role.kubernetes.io/control-plane`, `operator: Exists`, `effect: NoSchedule`.
 
-**5. After a `nodeSelector` change, old Pods on non-matching nodes are NOT terminated immediately**
+**5. After a `nodeSelector` change, old Pods on non-matching nodes are NOT gone immediately**
 
-You add `nodeSelector: agents/role=edge`, expect existing Pods on non-edge nodes to be evicted instantly, and they hang around for ~10 seconds before terminating.
+You add `nodeSelector: agents/role=edge`, expect existing Pods on non-edge nodes to vanish instantly, and they linger in `Terminating` for up to ~30 seconds.
 
-This is the DaemonSet controller's normal reconciliation cadence. The controller polls roughly every 10 seconds and reconciles diffs — eventual consistency. There is no "atomic re-selection" event.
+The controller part of this is actually fast: it watches the API server and reacts to the spec change within moments, issuing the Pod deletions almost immediately. The lingering you see is the **Pod termination lifecycle** — each Pod gets its `terminationGracePeriodSeconds` (default 30 s) to exit cleanly after SIGTERM, and a busy or signal-ignoring process rides out the full grace period before the kubelet sends SIGKILL.
 
-Fix: nothing to fix — the eviction will happen on the next reconcile loop. If you genuinely need the change to be instant (rare), delete the DaemonSet and re-create it.
+Fix: nothing to fix — `Terminating` is the system working as designed. If your agent shuts down fast on SIGTERM, set a shorter `terminationGracePeriodSeconds` in the Pod template so node-reassignment churn settles quicker.
 
 **6. Rolling update stuck at `maxUnavailable` because a new Pod is failing health checks**
 
