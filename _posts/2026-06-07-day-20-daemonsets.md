@@ -654,6 +654,6 @@ The webapp from Days 5–18 covers the "stateless app" workload type. The Postgr
 
 ## What's next
 
-[Day 21: Affinity, Anti-Affinity, and Topology Spread Constraints →](/articles/2026/06/08/day-21-affinity-topology-spread/)
+[Day 21: Affinity, Anti-Affinity, and Topology Spread Constraints →](/articles/2026/06/10/day-21-affinity-topology-spread/)
 
 On Day 21 you will turn from "where Pods *must* run" (DaemonSet's per-node guarantee) to "where Pods *should* run" (the scheduler's soft and hard preferences). You will add **`podAntiAffinity`** to the webapp Deployment so its replicas refuse to land on the same node — a real availability win for a small cluster, the difference between "one node down" and "outage". You will use **`topologySpreadConstraints`** to express "spread evenly across the workers, ±1 Pod per node" — the modern, declarative replacement for the old anti-affinity tricks. And you will see **`nodeAffinity`** as the gentler cousin of `nodeSelector` (`required` vs `preferred`), so a Pod prefers GPU nodes but does not refuse to start without one.
