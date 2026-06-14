@@ -25,6 +25,44 @@ In [Day 7](/articles/2026/05/18/day-07-ingress-tls/) you got the webapp running 
 
 Observability is the answer. In production, you don't just want a cluster — you want to **see** the cluster: metrics, dashboards, alerts. Today you install the whole observability stack in one Helm command, expose Grafana through the Ingress controller from Day 7, find your webapp pods in pre-built dashboards, and wire your first alert rule.
 
+> **New to monitoring? The next section explains every tool — Prometheus, Grafana, Alertmanager —
+> from scratch before you install anything.**
+
+---
+
+## First — what is observability, in plain English?
+
+You can already *run* your app. **Observability is being able to *see* what it's doing while it
+runs** — so when something breaks, you're diagnosing it instead of guessing in the dark.
+
+It rests on three "pillars." This series covers the first two:
+
+- **Metrics** — numbers measured over time: CPU %, memory used, requests per second, restart
+  count. (**today**)
+- **Logs** — the text lines your app prints out. (**Day 9**)
+- **Traces** — the path one request takes as it hops between services. (beyond this series)
+
+The tools you'll install today, each in one line:
+
+- **Prometheus** — the metrics engine. Every few seconds it *pulls* numbers from your cluster
+  and stores them as **time-series** (a value stamped with a time — e.g. "pod X used 0.3 CPU
+  cores at 14:32"). It also continuously checks your alert rules.
+- **Grafana** — the dashboards. It asks Prometheus for numbers and draws them as graphs a human
+  can actually read.
+- **Alertmanager** — the pager. When Prometheus decides something is wrong, Alertmanager decides
+  *who* gets told (Slack, email, PagerDuty) and avoids spamming them with duplicates.
+- **node-exporter** and **kube-state-metrics** — two small "sensors": node-exporter reports each
+  machine's health (disk, load); kube-state-metrics reports Kubernetes' own state (how many pods
+  are NotReady?).
+
+The single idea that ties it all together: **everything exposes its numbers at a `/metrics` web
+address, and Prometheus simply visits each one on a schedule and writes down what it sees.**
+Dashboards and alerts are just layers on top of that.
+
+> All of the above come bundled in **one** Helm chart (`kube-prometheus-stack`), so a single
+> command installs the lot. Don't try to memorize the names — you'll meet each one in context as
+> you go.
+
 ## What you will build
 
 By the end of this article you will have:
