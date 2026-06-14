@@ -31,7 +31,44 @@ The bad path was too easy. The fix is making the bad path impossible.
 
 A CI/CD pipeline does one thing: it removes humans from the build, test, and publish loop. The only way to get a new image into the registry is to push code, pass tests, and survive a CVE scan. There is no other path.
 
-This article builds that pipeline. You'll have a 3-job GitHub Actions workflow that runs in under 2 minutes, uses Docker's layer cache to make repeat builds nearly instant, and produces signed, tagged images in GHCR on every merge to main.
+This article builds that pipeline. You'll have a 3-job GitHub Actions workflow that runs in under 2 minutes, uses Docker's layer cache to make repeat builds nearly instant, and produces tagged, CVE-scanned images in GHCR on every merge to main.
+
+> **First time hearing "CI/CD"? You're in the right place.** The next section explains every
+> term — CI/CD, pipeline, workflow, job, GHCR — in plain English before any YAML appears.
+
+---
+
+## First — what is CI/CD, in plain English?
+
+So far, you've run every build and test by hand on your own machine. **CI/CD is about handing
+that off to a robot** that does it automatically, the same way, every time.
+
+- **CI — Continuous Integration:** every time you push code, a server automatically builds it
+  and runs your tests. If something's broken, you find out in minutes — not after it reaches
+  production.
+- **CD — Continuous Delivery:** once the tests pass, that same server automatically publishes
+  the result (here, your Docker image) so it's ready to ship.
+
+The thing doing this work is a **pipeline** — a list of steps that run automatically on every
+push. You'll build yours with **GitHub Actions**, GitHub's built-in automation system. A few
+words you'll see throughout:
+
+- **Workflow** — the whole automated process, defined in one YAML file in your repo
+  (`.github/workflows/ci.yml`). GitHub reads it and runs it for you.
+- **Job** — one chunk of a workflow. We have three: `test`, `build-and-push`, and `scan`. Jobs
+  can depend on each other (the build won't start until tests pass).
+- **Step** — a single command or pre-packaged action inside a job.
+- **Runner** — the fresh, throwaway virtual machine GitHub spins up to run your jobs. You don't
+  install or manage anything on it.
+- **GHCR (GitHub Container Registry)** — GitHub's storage for Docker images, at `ghcr.io`.
+  Think "Docker Hub, built into GitHub." This is where your built image gets published.
+
+The whole idea in one sentence: **you push code → GitHub automatically tests it, and only if it
+passes, and only on `main`, builds and publishes your Docker image — with no human able to skip
+a step.**
+
+That's the destination. Everything below — the diagrams, the YAML — is just the detail of
+making it happen. Don't worry about memorizing it; we build it one job at a time.
 
 ---
 
@@ -51,6 +88,10 @@ A production-grade GitHub Actions pipeline with three jobs and smart trigger log
 ---
 
 ## Architecture diagrams
+
+> These four diagrams are the **map** of the pipeline you're about to build. Skim them now to
+> get the overall shape — then refer back to them as each piece is built in Parts 2–4. You do
+> **not** need to absorb all four at once.
 
 ### Diagram 1 — Pipeline trigger flow
 
@@ -786,12 +827,13 @@ This is the gate working exactly as intended. Bad code cannot proceed to the bui
 
 ### Step 4: Fix and merge
 
-Restore the correct test and push:
+That failing test was only added to prove the gate works — there is no earlier "correct"
+version to restore, because the file didn't exist before Step 3. So the fix is simply to
+**remove it**, which returns the branch to the green state it had in Steps 1–2:
 
 ```bash
-git checkout src/routes/health.test.js  # restore original
-git add src/routes/health.test.js
-git commit -m "test: restore correct health check test"
+git rm src/routes/health.test.js
+git commit -m "test: remove the intentionally failing test"
 git push origin feature/add-version-endpoint
 ```
 
