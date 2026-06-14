@@ -681,7 +681,7 @@ has a bad day.
 
 ## What's next
 
-[Day 26: Vertical Pod Autoscaler — Right-Sizing Requests Automatically →](/articles/2026/06/15/day-26-vertical-pod-autoscaler/)
+[Day 26: Vertical Pod Autoscaler — Right-Sizing Requests Automatically →](/articles/2026/06/14/day-26-vertical-pod-autoscaler/)
 
 Today you set requests and limits by hand and reasoned about QoS from them — but
 how do you know the *right* numbers? Guess too low and you OOMKill (Part 4) or get
