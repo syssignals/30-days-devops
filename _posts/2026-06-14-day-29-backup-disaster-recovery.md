@@ -707,7 +707,7 @@ journey should: putting it all together into a production-readiness review.
 
 ## What's next
 
-[Day 30: Production Readiness — The Capstone Checklist →](/articles/2026/06/15/day-30-production-readiness-capstone/)
+[Day 30: Production Readiness — The Capstone Checklist →](/articles/2026/06/14/day-30-production-readiness-capstone/)
 
 Thirty days ago this was an empty laptop; now it is a cluster running a hardened,
 autoscaling, GitOps-managed, observable, backed-up platform — and every piece was
