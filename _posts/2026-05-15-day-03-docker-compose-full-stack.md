@@ -40,6 +40,15 @@ A four-service local development stack:
 
 Every service has a health check. Nginx only starts when the app is healthy. The app only starts when the database and cache are healthy. No race conditions, no manual retries.
 
+> **New to these four pieces? One line each:**
+> - **PostgreSQL** is a **database** — it stores your data permanently on disk.
+> - **Redis** is a **cache** — an in-memory store that returns frequently-used data in about
+>   a millisecond, so you don't hit the database on every request.
+> - **Nginx** is a **reverse proxy** — a single front door that receives every incoming request
+>   and forwards it to the right service behind it. It's how real apps expose *one* public
+>   entry point while keeping the database and app private.
+> - **The Node.js app** is your code from Day 2, now wired up to talk to both PostgreSQL and Redis.
+
 **Estimated time:** 60 minutes
 
 ```mermaid
@@ -90,27 +99,47 @@ If you only want the npm setup and can copy the `Dockerfile` and `.dockerignore`
 
 ```bash
 mkdir docker-best-practices && cd docker-best-practices
-npm init -y
 mkdir -p src/routes src/middleware
 
-npm install express helmet cors morgan zod dotenv
-npm install --save-dev nodemon jest supertest
+# The exact package.json from Day 2 — copy the whole block so your
+# dependencies and lockfile match Day 2's. No npm init, no patching.
+cat > package.json << 'EOF'
+{
+  "name": "docker-best-practices",
+  "version": "1.0.0",
+  "description": "Sample Node.js REST API for Day 2 of 30 Days of DevOps",
+  "main": "src/index.js",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "nodemon src/index.js",
+    "test": "jest --coverage",
+    "test:ci": "jest --ci --forceExit"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "helmet": "^7.1.0",
+    "morgan": "^1.10.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "nodemon": "^3.1.4",
+    "supertest": "^7.0.0"
+  }
+}
+EOF
 
-node -e "
-const fs = require('fs');
-const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-pkg.main = 'src/index.js';
-pkg.engines = { node: '>=20.0.0' };
-pkg.scripts = {
-  start: 'node src/index.js',
-  dev: 'nodemon src/index.js',
-  test: 'jest --coverage',
-  'test:ci': 'jest --ci --forceExit'
-};
-fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2));
-console.log('package.json updated');
-"
+npm install
 ```
+
+> You'll still need the `Dockerfile`, `.dockerignore`, and `src/middleware/errorHandler.js`
+> from Day 2 (Day 3 reuses them unchanged). This is exactly why completing Day 2 first is the
+> smoother path.
 
 ### Required software
 
@@ -223,6 +252,7 @@ Expected output:
 ```
 pg: installed
 ioredis: installed
+express-async-errors: installed
 ```
 
 ### Step 2: PostgreSQL connection pool
