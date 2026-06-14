@@ -20,6 +20,14 @@ In [Day 5](/articles/2026/05/16/day-05-kubernetes-fundamentals/) you wrote `depl
 
 **Helm** solves this. A Helm **chart** is a templated package of Kubernetes manifests. You write the templates once, supply environment-specific values in a `values.yaml` file, and install the same chart anywhere with a single command.
 
+> **The one-line mental model:** Helm is a **package manager for Kubernetes** — what `apt`,
+> `brew`, or `npm` are for installing software onto a machine, Helm is for installing apps into
+> a cluster. Three words you'll use constantly:
+> - **Chart** — the package: templates plus their default settings.
+> - **Values** — the per-environment settings you feed a chart (dev wants 2 replicas, prod wants 4).
+> - **Release** — one installed copy of a chart running in the cluster. You can install the same
+>   chart many times under different release names.
+
 ## What you will build
 
 By the end of this article you will have:
@@ -235,6 +243,14 @@ We keep `_helpers.tpl` (it contains useful name/label helpers) and `NOTES.txt` (
 ## Part 3 — Write the templates
 
 Three template files: `deployment.yaml`, `service.yaml`, and an updated `NOTES.txt`. Then we will edit `values.yaml` to drive them.
+
+> **Seeing `{% raw %}{{ }}{% endraw %}`, `include`, and `nindent` for the first time? Don't let it
+> intimidate you.** The only part you author and care about is the
+> **`{% raw %}{{ .Values.* }}{% endraw %}`** placeholders — those pull values out of `values.yaml`.
+> The `include "webapp.*"` and `nindent` bits are standard Helm boilerplate that `helm create`
+> generated for you (they build the names and labels); leave them exactly as-is. Read each
+> template as *"ordinary Day 5 YAML, with the values that change between environments swapped out
+> for `{% raw %}{{ .Values.something }}{% endraw %}`."*
 
 ### deployment.yaml
 
@@ -744,6 +760,9 @@ kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 nodes:
   - role: control-plane
+    # Keep the same node-image pin as Day 5 so the cluster comes back up on the
+    # exact Kubernetes version (v1.29.4) you've used throughout this series.
+    image: kindest/node:v1.29.4
     extraPortMappings:
       - containerPort: 30080
         hostPort: 30080
@@ -752,7 +771,9 @@ nodes:
         hostPort: 30081
         protocol: TCP
   - role: worker
+    image: kindest/node:v1.29.4
   - role: worker
+    image: kindest/node:v1.29.4
 EOF
 kind delete cluster --name devops-cluster
 kind create cluster --name devops-cluster --config ~/30-days-devops/day-05/kind-cluster.yaml
