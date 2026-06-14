@@ -704,7 +704,7 @@ release and *assert* it works, in both the Helm-native and the GitOps worlds.
 
 ## What's next
 
-[Day 28: Custom Resource Definitions and the Operator Pattern — How Every Add-On You Installed Actually Works →](/articles/2026/06/15/day-28-crds-operators/)
+[Day 28: Custom Resource Definitions and the Operator Pattern — How Every Add-On You Installed Actually Works →](/articles/2026/06/14/day-28-crds-operators/)
 
 You have installed nine controllers without ever asking how they work: cert-manager
 (Day 7), the Prometheus Operator (Day 8), Argo CD (Day 10), Sealed Secrets (Day 11),
