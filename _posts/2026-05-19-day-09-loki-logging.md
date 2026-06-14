@@ -20,6 +20,32 @@ In [Day 8](/articles/2026/05/19/day-08-prometheus-grafana/) you watched a webapp
 
 The fix is **centralised logging**: ship every container's stdout/stderr off the nodes into a long-lived store, then query that store the same way you query Prometheus — by label, over a time range. We use the **Loki + Promtail** stack from Grafana Labs, because it integrates seamlessly with the Grafana you already have from Day 8.
 
+> **New to log aggregation? The next section explains Loki, Promtail, and LogQL from scratch
+> before you install anything.**
+
+---
+
+## First — Loki, Promtail, and LogQL in plain English
+
+Day 8 gave you **metrics** (the *what*); Day 9 adds **logs** (the *why*). This second pillar of
+observability slots in beside the first using the **same Grafana**, the **same labels**, and the
+**same time picker** you already know.
+
+Three new names, one line each:
+
+- **Loki** — the **log database**. Think "Prometheus, but for log lines instead of numbers": it
+  stores every container's output and lets you search it by label over a time range. (Grafana
+  Labs built it specifically to pair with Prometheus.)
+- **Promtail** — the **delivery truck**. It runs on every node, tails the log files your
+  containers produce, tags each line with Kubernetes labels (`namespace`, `pod`, `container`),
+  and ships them to Loki.
+- **LogQL** — Loki's **query language**. If you picked up PromQL in Day 8, you already know most
+  of it: start with a label selector like `{namespace="default"}`, then optionally filter the
+  matched lines (`|= "error"`).
+
+> Like Day 8, this is two small Helm installs (Loki, then Promtail). Don't worry about the
+> internals yet — you'll meet each piece as you install it.
+
 ## What you will build
 
 By the end of this article you will have:
