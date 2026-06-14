@@ -20,6 +20,54 @@ Docker Compose (Day 3) is perfect for local dev stacks. But once you need to run
 
 In this article you will run a real, multi-node Kubernetes cluster on your laptop using **kind** (Kubernetes IN Docker), deploy an application, wire up health probes so Kubernetes knows when your app is truly ready, and perform a **zero-downtime rolling update** — all without touching a cloud provider.
 
+> **Never touched Kubernetes? Start with the next section.** This is Day 5 — the first
+> Kubernetes day — and it explains every word (cluster, node, pod, Deployment, Service) from
+> scratch before you run a single command.
+
+---
+
+## First — what *is* Kubernetes?
+
+You've spent the last few days running containers with Docker. **Kubernetes (often shortened
+to "K8s") is the tool that runs your containers *for you* — across many machines — and keeps
+them running**: restarting crashed ones, replacing dead ones, and rolling out new versions
+without downtime. The technical word for this is an **orchestrator**: it conducts a fleet of
+containers the way a conductor leads an orchestra.
+
+Why not just Docker? Docker runs containers on *one* machine, and if a container crashes you
+restart it by hand. Real production systems run across many machines and must heal themselves
+at 3 a.m. with nobody watching. That self-healing, multi-machine job is what Kubernetes does.
+
+**The one idea that makes Kubernetes click:** you describe the end state you want, and
+Kubernetes makes it true — and *keeps* it true. You don't say "start this container." You say
+"I want 3 copies of this app running at all times." If one dies, Kubernetes notices and starts
+another, automatically. Describing the goal is called being **declarative**; the never-ending
+check-and-fix behind it is the **control loop** (or reconciliation loop).
+
+Here are the words you'll meet today, in plain English. **Don't memorize this** — skim it and
+refer back when a term shows up:
+
+| Term | In plain English |
+|---|---|
+| **Cluster** | The whole group of machines Kubernetes manages, working together as one. |
+| **Node** | A single machine in the cluster. (With kind, each "machine" is actually a Docker container pretending to be one.) |
+| **Control plane** | The "brain" node — it makes the decisions and stores the desired state. |
+| **Worker node** | A "muscle" node — it actually runs your app's containers. |
+| **Pod** | The smallest thing Kubernetes runs: a thin wrapper around one container (your app). You scale, schedule, and heal *pods* — not raw containers. |
+| **Deployment** | A higher-level object that says "keep N pods of this app running, and handle updates for me." This is what you'll usually create. |
+| **Service** | A stable address that load-balances traffic across your pods. (Pods come and go; the Service stays put.) |
+| **kubectl** | The command-line tool you use to talk to the cluster ("kube control"). Almost every command in this article is a `kubectl` command. |
+| **Manifest** | A YAML file describing what you want (a Deployment, a Service, …). You hand it to the cluster with `kubectl apply`. |
+
+And the two tools you'll install in a moment:
+
+- **kind** — "**K**ubernetes **in** **D**ocker." It runs a real, throwaway Kubernetes cluster
+  *inside Docker containers on your laptop*. No cloud account, no cost — and you can delete the
+  whole thing with one command when you're done.
+- **kubectl** — your remote control for that cluster.
+
+By the end of this article, every term in that table is something you'll have actually used.
+
 ## What you will build
 
 By the end of this article you will have:
@@ -29,6 +77,12 @@ By the end of this article you will have:
 - A **NodePort Service** exposing the app on `localhost:30080`
 - **Liveness and readiness probes** that gate traffic and auto-restart unhealthy pods
 - A zero-downtime **rolling update** from v1 to v2 using `maxSurge` and `maxUnavailable`
+
+> **Why nginx, and not the app from Days 2–4?** For your *first* Kubernetes deployment we use
+> the stock `nginx` image so nothing distracts from the Kubernetes concepts themselves — to
+> Kubernetes, every command works the same regardless of what's inside the container. The
+> objects you learn here (Deployment, Service, probes) are identical for your own app, and
+> later days keep building on this same `webapp` setup.
 
 ---
 
@@ -193,6 +247,10 @@ kube-system       Active   90s
 `kube-system` is where Kubernetes runs its own internal pods (DNS, proxy, etc.). Your application will live in `default`.
 
 ### Kubernetes architecture
+
+Here's what kind just built for you. It looks busy, but the key thing is simple: **you only
+ever talk to one part of it — the API Server — through `kubectl`.** Everything else watches and
+reacts on its own. Skim the diagram, then read the walkthrough below it.
 
 ```mermaid
 %%{init: {'theme': 'dark'}}%%
