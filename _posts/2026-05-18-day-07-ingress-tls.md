@@ -25,6 +25,39 @@ The production answer is an **Ingress**: a single HTTPS entry point per cluster,
 
 In this article you will install the **NGINX Ingress Controller** and **cert-manager**, route `webapp.local` to your Helm release, and serve it over HTTPS with a self-signed certificate issued automatically.
 
+> **New to Ingress, TLS, or certificates? The next section explains all of it in plain English
+> before any YAML.**
+
+---
+
+## First — Ingress, TLS, and cert-manager in plain English
+
+Today adds three new pieces. Here's each one, before you build it:
+
+- **Ingress** — a **smart front door** for your cluster. Instead of one port per app (Day 6's
+  NodePort), you get a *single* entry point that routes by **hostname**: `webapp.local` goes to
+  the webapp, `api.local` would go to an API, and so on. It's a reverse proxy that lives inside
+  the cluster.
+- **Ingress *Controller* vs Ingress *resource*** — easy to confuse, so let's separate them now.
+  The **Ingress Controller** is the actual running program (here, NGINX) that receives traffic
+  and forwards it. An **Ingress resource** is just a small YAML rule you write ("send
+  `webapp.local` to this Service"). You install **one** controller and write **many** Ingress
+  rules; the controller reads your rules and obeys them.
+- **TLS / HTTPS** — TLS is the encryption behind the padlock in your browser; HTTPS is simply
+  "HTTP carried over TLS." It does two jobs: encrypts traffic so nobody can snoop, and proves the
+  server really is who it claims to be.
+- **Certificate** — the file that makes TLS work: a server's verifiable ID card, plus the keys
+  used to encrypt. Normally you'd request one and remember to renew it — tedious and easy to
+  forget.
+- **cert-manager** — a robot that **obtains and renews certificates for you**. You add one
+  annotation to an Ingress; cert-manager notices, gets the certificate, stores it as a Secret,
+  and the controller starts serving HTTPS — no OpenSSL, no manual steps.
+
+> Today we issue a **self-signed** certificate — one the cluster signs for itself. Browsers
+> don't trust those, so you'll see a "not secure" warning; that's expected and fine for local
+> dev. The *exact same setup* swaps in **Let's Encrypt** for real, browser-trusted certificates
+> in production, with no change to your workflow.
+
 ## What you will build
 
 By the end of this article you will have:
@@ -128,6 +161,8 @@ kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 nodes:
   - role: control-plane
+    # Same node-image pin as Day 5/6 — keep the whole series on v1.29.4.
+    image: kindest/node:v1.29.4
     kubeadmConfigPatches:
       - |
         kind: InitConfiguration
@@ -142,7 +177,9 @@ nodes:
         hostPort: 443
         protocol: TCP
   - role: worker
+    image: kindest/node:v1.29.4
   - role: worker
+    image: kindest/node:v1.29.4
 EOF
 ```
 
@@ -160,7 +197,7 @@ Expected output:
 
 ```text
 Creating cluster "devops-cluster" ...
- ✓ Ensuring node image (kindest/node:v1.29.2)
+ ✓ Ensuring node image (kindest/node:v1.29.4)
  ✓ Preparing nodes
  ✓ Writing configuration
  ✓ Starting control-plane
@@ -179,7 +216,7 @@ kubectl get nodes --show-labels | grep ingress-ready
 Expected output:
 
 ```text
-devops-cluster-control-plane   Ready   control-plane   90s   v1.29.2   ...,ingress-ready=true,...
+devops-cluster-control-plane   Ready   control-plane   90s   v1.29.4   ...,ingress-ready=true,...
 ```
 
 ---
@@ -960,8 +997,8 @@ In Day 8 we instrument the cluster. You will:
 
 - Install the **kube-prometheus-stack** Helm chart in one command (Prometheus, Grafana, node-exporter, kube-state-metrics, Alertmanager)
 - Expose Grafana through the same Ingress controller from today, with a `grafana.local` hostname
-- Find your webapp Pods automatically appearing in Prometheus targets via the **ServiceMonitor** CRD
-- Build a Grafana dashboard showing request rate, error rate, and pod CPU/memory
-- Wire a basic alert rule that fires when no pods are Ready
+- Find your **webapp Pods** in Grafana's built-in dashboards — live CPU and memory, with zero changes to the app (metrics flow automatically via the kubelet's cAdvisor endpoint)
+- Build a **custom Grafana dashboard** with PromQL panels for pod CPU, memory, network, and restarts
+- Wire a basic **PrometheusRule** alert that fires when no webapp pods are Ready
 
-[Day 8 coming soon →]
+[Day 8: Observability — Prometheus & Grafana →](/articles/2026/05/19/day-08-prometheus-grafana/)
