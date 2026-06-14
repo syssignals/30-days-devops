@@ -736,7 +736,7 @@ run your platform.
 
 ## What's next
 
-[Day 29: Backup and Disaster Recovery — Velero, Volumes, and the pg_dump You Already Have →](/articles/2026/06/15/day-29-backup-disaster-recovery/)
+[Day 29: Backup and Disaster Recovery — Velero, Volumes, and the pg_dump You Already Have →](/articles/2026/06/14/day-29-backup-disaster-recovery/)
 
 You have built a real platform — a stateful database (Day 17), GitOps-managed apps
 (Day 10), secrets, certs, and a fleet of operators — and asked the uncomfortable
