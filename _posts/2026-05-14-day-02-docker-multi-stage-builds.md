@@ -27,6 +27,53 @@ Docker was supposed to fix this. And it does — but only if you use it correctl
 
 This article fixes that. You'll take a real Node.js application from a 1.2 GB naive image down to a 47 MB hardened production image. Every decision is explained. Every command is verified. By the end you'll have a Dockerfile template you can drop into any project and trust.
 
+> **New to Docker? You're in the right place.** The next section explains every word you
+> need — image, container, layer — from scratch. If you already know Docker, skip ahead to
+> "What you'll build."
+
+---
+
+## First — what *is* Docker?
+
+Yesterday you put your *code* into Git. Today you put your *running app* into a box that
+behaves the same everywhere. That box is a **container**, and Docker is the tool that builds
+and runs it.
+
+Here's the exact problem it solves. Your app needs a specific version of Node.js, some system
+libraries, certain environment variables, and files in the right places. On your laptop it
+all lines up and the app runs. On a teammate's machine — or a production server — one of those
+things is slightly different, and it breaks. *"Works on my machine"* is that mismatch.
+
+A container fixes it by packaging your app **together with everything it needs to run** — the
+right Node.js, the libraries, the files — into one sealed unit. That unit runs identically on
+your laptop, your teammate's laptop, and the server, because it carries its whole environment
+with it.
+
+Five words you'll see on every page from here on — in plain English:
+
+- **Image** — the *blueprint*. A read-only template containing your app plus its environment.
+  Think of it like a recipe. You build an image once.
+- **Container** — a *running copy* of an image. Think of it like the meal cooked from the
+  recipe. You can start many containers from one image.
+- **Dockerfile** — a plain text file listing the step-by-step instructions Docker follows to
+  build your image. You'll write one in Part 2.
+- **Layer** — images are built in stacked layers, one per instruction in the Dockerfile.
+  Docker caches them, so a rebuild only redoes what actually changed. (This is why the *order*
+  of instructions matters — we'll see it cut a 45-second build down to 2 seconds.)
+- **Registry** — a place to store and share images: like GitHub, but for images. Docker Hub
+  is the default public one.
+
+The whole flow in one sentence:
+**you write a `Dockerfile` → Docker builds an `image` → you run the image as a `container`.**
+
+> During setup in a moment, you'll run `docker run hello-world`. That single command pulls a
+> tiny image from Docker Hub and runs it as a container — your very first one. Today you'll go
+> on to build your own.
+
+That's the entire mental model. Everything else in this article is about making your image
+**small**, **safe**, and **fast to rebuild**. Don't worry about memorizing the rest yet — we
+build it up one step at a time.
+
 ---
 
 ## What you'll build
@@ -44,7 +91,9 @@ A production-grade Docker setup for a Node.js REST API, including:
 **Estimated time:** 60 minutes  
 **Final image size:** ~47 MB (down from ~1.2 GB)
 
-Here is the complete picture of what this build produces:
+Here is the complete picture of what this build produces. **This is the destination, not the
+starting line** — if it looks like a lot right now, that's expected. We build it one stage at a
+time, and by Part 3 every box below will make sense:
 
 ```mermaid
 %%{init: {'theme': 'dark'}}%%
@@ -122,7 +171,15 @@ docker info | grep "Server Version"
 # Expected: Server Version: 24.x.x
 ```
 
-Install Docker Engine on Ubuntu (skip if already installed):
+**macOS / Windows — use Docker Desktop (the easy path):** download it from
+[docker.com/products/docker-desktop](https://www.docker.com/products/docker-desktop/), run the
+installer, and launch the app. Docker Desktop bundles the Engine, Buildx, **and** Compose in
+one package — so once it's running you can **skip the Buildx and Compose install steps below**
+and go straight to the Docker Scout step. On Windows, accept the **WSL2** option when prompted,
+then run every command in this article from your Ubuntu WSL terminal (not PowerShell). Verify
+with `docker --version`.
+
+**Linux — install Docker Engine on Ubuntu** (skip if already installed):
 
 ```bash
 # Remove old versions
@@ -326,6 +383,10 @@ All checks passed. Ready to build.
 ## Part 1: The sample application
 
 We need a real application — not a toy. This is a Node.js REST API with actual dependencies: Express, input validation, security middleware, and structured logging. Realistic enough that the image size problem is genuine.
+
+> **You do not need to understand this Node.js code to learn Docker.** It's just a realistic
+> app for us to containerize. Copy each block, paste it, move on — the Docker lessons are what
+> matter here, and they apply to an app written in *any* language.
 
 ### Step 1: Create the project structure
 
@@ -993,12 +1054,12 @@ flowchart TD
 
 The two subgraphs represent two different ways to run the same application. You pick one with `docker compose up` (development) or `docker compose -f docker-compose.prod.yml up` (production-like testing).
 
-**Production-like (left subgraph):**
+**Production-like (the `docker-compose.prod.yml` box):**
 - No bind mounts anywhere — the source code is baked into the image at build time. There is no local folder syncing
 - The only volume is a `tmpfs` mounted at `/tmp` — this is a RAM-backed temporary filesystem that disappears when the container stops. The rest of the filesystem is **read-only**
 - This configuration tests whether your app can actually run in the constrained environment it will face in production: no write access, no dev tools, no root
 
-**Development (right subgraph):**
+**Development (the `docker-compose.yml` box):**
 - Traffic enters through port 3000 on your host machine and reaches the `myapp:dev` container (built on `node:20-alpine` with nodemon installed)
 - `./src` is **bind-mounted** into the container — every file you save locally is instantly visible inside the running container without rebuilding the image. The double-headed arrow in the diagram represents this live sync
 - `node_modules` lives in a **named volume** (the yellow cylinder), *not* a bind mount — this is intentional. Your local `node_modules` was compiled for your host OS (macOS/Linux). The container's `node_modules` was compiled for Alpine Linux. Mounting your local one over it would break native module bindings. The named volume keeps them separate
@@ -1008,8 +1069,6 @@ Create `docker-compose.yml` for the development stack. Every comment that was in
 
 ```bash
 cat > docker-compose.yml << 'EOF'
-version: '3.9'
-
 services:
   app:
     build:
@@ -1067,8 +1126,6 @@ Now create `docker-compose.prod.yml` for production-like local testing:
 
 ```bash
 cat > docker-compose.prod.yml << 'EOF'
-version: '3.9'
-
 services:
   app:
     build:
