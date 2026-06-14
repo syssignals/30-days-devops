@@ -979,12 +979,13 @@ yarn-debug.log*
 .DS_Store
 Thumbs.db
 
-# Test artefacts
+# Test coverage output (regenerated — never needed in an image)
 coverage/
 .nyc_output/
-__tests__/
-*.test.js
-*.spec.js
+# NOTE: we deliberately do NOT ignore test files (*.test.js, tests/, __tests__).
+# The CI "test" stage in Day 4 builds with `COPY . .` and needs them to run the
+# suite. They never reach the production image anyway: the production stage
+# copies only `src/`, and our tests live in a top-level `tests/` directory.
 
 # Docker config (no need inside the image)
 Dockerfile*

@@ -395,6 +395,54 @@ FROM gcr.io/distroless/nodejs20-debian12 AS production
 
 If your stage names differ, either update the Dockerfile or adjust the `--target` values in the workflow. The workflow assumes exact names `test` and `production`.
 
+### Add a unit test for the gate to run
+
+The `test` stage runs `npm run test:ci` (Jest). The project from Days 2–3 doesn't ship any
+tests yet, and Jest exits with an error if it finds none — so before the pipeline can go green,
+add one real test. Keep it **dependency-free**: it must run inside the Docker `test` stage,
+where there is no PostgreSQL or Redis. This unit test checks the same validation rules the
+`/api/users` route enforces, using `zod` directly — no database, no network:
+
+```bash
+mkdir -p docker-best-practices/tests
+
+cat > docker-best-practices/tests/validation.test.js << 'EOF'
+'use strict';
+
+// A dependency-free unit test of the user-validation rules the API enforces.
+// It needs no database or network, so it runs cleanly inside the Docker
+// `test` stage during CI. Tests live in tests/ (not src/) so they reach the
+// CI build but never the production image (which copies only src/).
+const { z } = require('zod');
+
+const UserSchema = z.object({
+  name:  z.string().min(1).max(100),
+  email: z.string().email(),
+  role:  z.enum(['admin', 'user', 'viewer']).default('user'),
+});
+
+test('a valid user passes validation', () => {
+  const result = UserSchema.safeParse({ name: 'Ann', email: 'ann@example.com' });
+  expect(result.success).toBe(true);
+});
+
+test('a malformed email is rejected', () => {
+  const result = UserSchema.safeParse({ name: 'Ann', email: 'not-an-email' });
+  expect(result.success).toBe(false);
+});
+EOF
+
+git -C docker-best-practices add tests/validation.test.js
+git -C docker-best-practices commit -m "test: add user validation unit test"
+git -C docker-best-practices push origin main
+```
+
+> **Why `tests/` and not `src/`?** The production stage copies only `src/`, so anything in
+> `tests/` is automatically kept out of the shipped image — while the CI `test` stage
+> (`COPY . .`) still picks it up. This is also why Day 2's `.dockerignore` does **not** exclude
+> test files. Pushing this to `main` now won't trigger a pipeline yet — the workflow doesn't
+> exist until the next part.
+
 ### Understanding GHCR
 
 GHCR (GitHub Container Registry) is GitHub's native container registry, available at `ghcr.io`. Key facts:
@@ -740,13 +788,56 @@ Create a small feature branch with a real change:
 git checkout -b feature/add-version-endpoint
 ```
 
-Add a version route to the health controller:
+Add a version route to the health controller. Overwrite `src/routes/health.js` with the full
+file below — it's your Day 3 health router plus one new `/version` route (copy-paste the whole
+block, no partial edits):
 
-```javascript
-// Append to src/routes/health.js
+```bash
+cat > src/routes/health.js << 'EOF'
+'use strict';
+
+const { Router } = require('express');
+const { pool }   = require('../db');
+const { redis }  = require('../cache');
+
+const router = Router();
+
+router.get('/', (req, res) => {
+  res.json({
+    status:      'healthy',
+    timestamp:   new Date().toISOString(),
+    uptime:      Math.floor(process.uptime()),
+    environment: process.env.NODE_ENV || 'development',
+  });
+});
+
+router.get('/ready', (req, res) => res.json({ status: 'ready' }));
+
+// NEW: report the running version from package.json
 router.get('/version', (req, res) => {
   res.json({ version: require('../../package.json').version });
 });
+
+router.get('/db', async (req, res) => {
+  try {
+    const { rows } = await pool.query('SELECT 1 AS ok');
+    res.json({ status: 'healthy', result: rows[0] });
+  } catch (err) {
+    res.status(503).json({ status: 'unhealthy', error: err.message });
+  }
+});
+
+router.get('/cache', async (req, res) => {
+  try {
+    const pong = await redis.ping();
+    res.json({ status: 'healthy', response: pong });
+  } catch (err) {
+    res.status(503).json({ status: 'unhealthy', error: err.message });
+  }
+});
+
+module.exports = { healthRouter: router };
+EOF
 ```
 
 Commit and push:
@@ -789,20 +880,23 @@ After it completes, notice:
 
 ### Step 3: Force a test failure to verify the gate works
 
-While still on the feature branch, introduce a deliberate test failure:
+While still on the feature branch, introduce a deliberate test failure. Keep it dependency-free
+so it fails on a clean assertion (not on a missing database) — that way the failure you see is
+unambiguously "a test failed," which is exactly what the gate is meant to catch:
 
 ```bash
-cat > src/routes/health.test.js << 'EOF'
-const request = require('supertest');
-const { app } = require('../../src/index');
+cat > tests/regression.test.js << 'EOF'
+'use strict';
 
-test('health check returns 200', async () => {
-  const res = await request(app).get('/health');
-  expect(res.statusCode).toBe(200);
-  expect(res.body.status).toBe('this-will-fail');
+const { z } = require('zod');
+const EmailSchema = z.string().email();
+
+// Intentionally WRONG: this asserts a valid email is rejected, so it fails.
+test('intentionally failing test to verify the CI gate', () => {
+  expect(EmailSchema.safeParse('real@example.com').success).toBe(false);
 });
 EOF
-git add src/routes/health.test.js
+git add tests/regression.test.js
 git commit -m "test: intentionally failing test to verify CI gate"
 git push origin feature/add-version-endpoint
 ```
@@ -821,7 +915,7 @@ Drill into the failed job:
 gh run view 12345680 --log-failed
 ```
 
-You will see output from inside the Docker build — Jest's failure output is streamed directly because the test runner is the Dockerfile's final command. The failure message will show `Expected: "this-will-fail"` vs `Received: "ok"`. The `build-and-push` job shows as "skipped" because `needs: test` was not satisfied.
+You will see output from inside the Docker build — Jest's failure output is streamed directly because the test runner is the Dockerfile's final command. The failure message will show `Expected: false` vs `Received: true` for the `intentionally failing test`. The `build-and-push` job shows as "skipped" because `needs: test` was not satisfied.
 
 This is the gate working exactly as intended. Bad code cannot proceed to the build step.
 
@@ -832,10 +926,13 @@ version to restore, because the file didn't exist before Step 3. So the fix is s
 **remove it**, which returns the branch to the green state it had in Steps 1–2:
 
 ```bash
-git rm src/routes/health.test.js
+git rm tests/regression.test.js
 git commit -m "test: remove the intentionally failing test"
 git push origin feature/add-version-endpoint
 ```
+
+(The real `tests/validation.test.js` stays, so the `test` job is green again — the branch is
+back to a passing suite, now with the `/version` feature added.)
 
 Wait for the green pipeline run. Then merge the PR:
 
@@ -935,15 +1032,15 @@ ERROR: failed to solve: process "/bin/sh -c npm run test:ci" did not complete su
 **Fix**: Read the full log above the error. Jest prints which tests failed and why. Fix the failing tests, commit, and push. Example log output:
 
 ```
-FAIL src/routes/health.test.js
-  ✕ health check returns 200 (45 ms)
+FAIL tests/regression.test.js
+  ✕ intentionally failing test to verify the CI gate (3 ms)
 
-  ● health check returns 200
+  ● intentionally failing test to verify the CI gate
 
     expect(received).toBe(expected)
 
-    Expected: "this-will-fail"
-    Received: "ok"
+    Expected: false
+    Received: true
 ```
 
 This is not a configuration error. It is the pipeline correctly blocking a broken commit.
