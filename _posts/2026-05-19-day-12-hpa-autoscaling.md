@@ -22,6 +22,17 @@ The **Horizontal Pod Autoscaler (HPA)** removes the compromise. You tell it the 
 
 CPU is the entry-level metric. The harder, more useful pattern is scaling on metrics your application actually cares about — requests-per-second, queue depth, websocket connections, p99 latency. The **Prometheus Adapter** plugs the metrics already in your Day 8 Prometheus stack into the same HPA API, so the autoscaler can react to anything you can write a PromQL query against.
 
+> **Three terms, before you start:**
+> - **Horizontal Pod Autoscaler (HPA)** — a Kubernetes object that automatically adds or removes
+>   *pod replicas* to keep a metric (usually CPU) near a target you set. "Horizontal" means more
+>   copies of the pod — as opposed to "vertical" (a *bigger* pod), which is Day 26.
+> - **metrics-server** — the small component that collects live CPU/memory usage from every node
+>   and serves it on the `metrics.k8s.io` API. The HPA reads from it. (kind doesn't ship it, so
+>   you install it first.)
+> - **Utilization** — usage measured as a *percentage of what the pod requested*. "60% CPU
+>   utilization" means each pod averages 60% of its `resources.requests.cpu`. With no CPU request
+>   set, the HPA can't compute a percentage and shows `<unknown>`.
+
 ## What you will build
 
 By the end of this article you will have:
@@ -237,7 +248,8 @@ Three coordinated changes go into the chart, all in the `gitops-webapp` repo fro
 3. Add a new template `webapp/templates/hpa.yaml`
 4. Enable autoscaling in `webapp/values-dev.yaml`
 
-Step 3 is the new file. Steps 1, 2, 4 are edits to existing files.
+Each step below is delivered as a **complete copy-paste file** — no find-and-replace, no
+append-by-hand. Paste the whole block and the file is written correctly.
 
 Clone (or `cd` into) the repo:
 
@@ -249,9 +261,47 @@ cd gitops-webapp
 
 ### 2.1 — Add `autoscaling` defaults to values.yaml
 
-Append the following block to the end of `webapp/values.yaml`:
+Rewrite `webapp/values.yaml` with the full file below — your Day 6 chart defaults plus a new
+`autoscaling` block at the bottom:
 
-```yaml
+```bash
+cat > webapp/values.yaml << 'EOF'
+# Default values for webapp chart.
+# Override these from the CLI (--set) or from a values file (-f).
+
+replicaCount: 3
+
+image:
+  repository: nginx
+  tag: "1.25-alpine"
+  pullPolicy: IfNotPresent
+
+rollingUpdate:
+  maxSurge: 1
+  maxUnavailable: 0
+
+service:
+  type: NodePort
+  port: 80
+  targetPort: 80
+  nodePort: 30080
+
+probes:
+  readiness:
+    initialDelaySeconds: 5
+    periodSeconds: 5
+  liveness:
+    initialDelaySeconds: 10
+    periodSeconds: 10
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 100m
+    memory: 128Mi
+
 # Horizontal Pod Autoscaler defaults.
 # When enabled, the HPA owns the Deployment's replica count and the
 # static replicaCount above is ignored (the template drops the replicas
@@ -261,26 +311,69 @@ autoscaling:
   minReplicas: 2
   maxReplicas: 6
   targetCPUUtilizationPercentage: 60    # average across all pods
+EOF
 ```
 
 The defaults keep autoscaling **off** so that any existing release using this chart at `values.yaml` defaults does not silently start auto-scaling. Each environment values file opts in explicitly.
 
 ### 2.2 — Conditionally omit replicas in deployment.yaml
 
-Open `webapp/templates/deployment.yaml`. Find the line:
+Rewrite `webapp/templates/deployment.yaml` with the full file below. It's your Day 11 template
+(with the `envFrom` Secret injection) — the **only change** is that the static `replicas:` line
+is now wrapped in `{% raw %}{{- if not .Values.autoscaling.enabled }}{% endraw %}`, so the field
+disappears entirely once the HPA takes over:
 
-```yaml
-spec:
-  replicas: {% raw %}{{ .Values.replicaCount }}{% endraw %}
-```
-
-Replace it with this conditional block:
-
-```yaml
+```bash
+cat > webapp/templates/deployment.yaml << 'EOF'
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {% raw %}{{ include "webapp.fullname" . }}{% endraw %}
+  labels:
+    {% raw %}{{- include "webapp.labels" . | nindent 4 }}{% endraw %}
 spec:
   {% raw %}{{- if not .Values.autoscaling.enabled }}
   replicas: {{ .Values.replicaCount }}
   {{- end }}{% endraw %}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: {% raw %}{{ .Values.rollingUpdate.maxSurge }}{% endraw %}
+      maxUnavailable: {% raw %}{{ .Values.rollingUpdate.maxUnavailable }}{% endraw %}
+  selector:
+    matchLabels:
+      {% raw %}{{- include "webapp.selectorLabels" . | nindent 6 }}{% endraw %}
+  template:
+    metadata:
+      labels:
+        {% raw %}{{- include "webapp.selectorLabels" . | nindent 8 }}{% endraw %}
+    spec:
+      containers:
+        - name: {% raw %}{{ .Chart.Name }}{% endraw %}
+          image: "{% raw %}{{ .Values.image.repository }}:{{ .Values.image.tag }}{% endraw %}"
+          imagePullPolicy: {% raw %}{{ .Values.image.pullPolicy }}{% endraw %}
+          ports:
+            - name: http
+              containerPort: {% raw %}{{ .Values.service.targetPort }}{% endraw %}
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: {% raw %}{{ .Values.probes.readiness.initialDelaySeconds }}{% endraw %}
+            periodSeconds: {% raw %}{{ .Values.probes.readiness.periodSeconds }}{% endraw %}
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: {% raw %}{{ .Values.probes.liveness.initialDelaySeconds }}{% endraw %}
+            periodSeconds: {% raw %}{{ .Values.probes.liveness.periodSeconds }}{% endraw %}
+          resources:
+            {% raw %}{{- toYaml .Values.resources | nindent 12 }}{% endraw %}
+          envFrom:
+            - secretRef:
+                name: webapp-secret
+EOF
 ```
 
 This is the single most important detail in the whole article. **If the Deployment manifest contains `replicas: 3` while the HPA also patches `spec.replicas`, the two controllers fight every reconcile cycle.** Argo CD/Helm sees the live count drift away from 3 and sets it back. The HPA sees the live count is wrong and patches it again. The result is replica thrash and constant `OutOfSync` flapping in Argo CD.
@@ -289,9 +382,10 @@ By omitting the field entirely from the manifest when autoscaling is enabled, He
 
 ### 2.3 — Create the HPA template
 
-Create `webapp/templates/hpa.yaml` with the following content:
+Create `webapp/templates/hpa.yaml`:
 
-```yaml
+```bash
+cat > webapp/templates/hpa.yaml << 'EOF'
 {% raw %}{{- if .Values.autoscaling.enabled }}
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
@@ -314,6 +408,7 @@ spec:
           type: Utilization
           averageUtilization: {{ .Values.autoscaling.targetCPUUtilizationPercentage }}
 {{- end }}{% endraw %}
+EOF
 ```
 
 Three things to note:
@@ -324,13 +419,39 @@ Three things to note:
 
 ### 2.4 — Enable autoscaling in the dev values file
 
-Edit `webapp/values-dev.yaml` and append:
+Rewrite `webapp/values-dev.yaml` with the full file below — your Day 10 dev values plus the
+autoscaling on-switch at the bottom:
 
-```yaml
+```bash
+cat > webapp/values-dev.yaml << 'EOF'
+# Dev environment overrides — merged over webapp/values.yaml at sync time.
+# Only include keys that differ from the chart defaults.
+
+replicaCount: 3
+
+image:
+  tag: "1.27-alpine"
+
+# ClusterIP so traffic enters through the NGINX Ingress, not a NodePort.
+# This matches the values-ingress.yaml pattern established in Day 7.
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 80
+
+resources:
+  requests:
+    cpu: 25m
+    memory: 32Mi
+  limits:
+    cpu: 50m
+    memory: 64Mi
+
 # Day 12: turn HPA on for the dev environment.
 # minReplicas/maxReplicas/target inherit from values.yaml.
 autoscaling:
   enabled: true
+EOF
 ```
 
 You inherit the chart defaults (`minReplicas: 2`, `maxReplicas: 6`, `target: 60 %`) — only the on-switch is overridden in dev. Production would typically set a higher `maxReplicas`.
