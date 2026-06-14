@@ -735,7 +735,7 @@ keeps them from fighting.
 
 ## What's next
 
-[Day 27: Helm Hooks and Chart Testing — Ordering, Migrations, and `helm test` →](/articles/2026/06/15/day-27-helm-hooks-chart-testing/)
+[Day 27: Helm Hooks and Chart Testing — Ordering, Migrations, and `helm test` →](/articles/2026/06/14/day-27-helm-hooks-chart-testing/)
 
 You have shipped a dozen changes through the Helm chart since Day 6, but always
 assuming every resource applies at once and in no particular order. Real releases
