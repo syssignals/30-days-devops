@@ -66,13 +66,13 @@ other 29 days have solid ground to stand on.
 
 ## What you'll be able to do by the end
 
-- [ ] Install Git and configure it with your name and email
-- [ ] Create a repository and understand what one actually is
-- [ ] Make commits — and read your project's history
-- [ ] Create branches, switch between them, and merge them back
-- [ ] Push your work to GitHub and understand "local" vs "remote"
-- [ ] Explain the two branching strategies — **GitFlow** and **Trunk-Based Development** — and pick the right one for a team
-- [ ] *(Optional)* Add professional automation: commit-message rules, pre-commit checks, and branch protection
+- Install Git and configure it with your name and email
+- Create a repository and understand what one actually is
+- Make commits — and read your project's history
+- Create branches, switch between them, and merge them back
+- Push your work to GitHub and understand "local" vs "remote"
+- Explain the two branching strategies — **GitFlow** and **Trunk-Based Development** — and pick the right one for a team
+- *(Optional)* Add professional automation: commit-message rules, pre-commit checks, and branch protection
 
 **Estimated time:** 45–60 minutes if you do it hands-on.
 **Skill level:** Complete beginner.
