@@ -20,6 +20,41 @@ On Day 10 you pushed a Helm chart to GitHub and let Argo CD keep the cluster in 
 
 **Sealed Secrets** solves this cleanly. The Bitnami controller runs inside your cluster and holds an RSA private key that never leaves the cluster. You use the companion CLI tool, `kubeseal`, to fetch the matching public key and encrypt a Secret before committing. The encrypted blob — a `SealedSecret` resource — is stored in Git. When Argo CD syncs it, the controller intercepts it, decrypts it with the private key, and creates a real Kubernetes `Secret` in the same namespace. From the application's point of view nothing changes: it still reads from a regular `Secret`. The only difference is that Git now holds something that is safe to be public.
 
+> **New to public-key encryption? The next section explains it with a padlock analogy before any
+> commands.**
+
+---
+
+## First — public-key encryption, in one minute
+
+Sealed Secrets is built on **asymmetric (public-key) encryption**. If that's new, here's the
+whole idea in one analogy:
+
+Imagine an **open padlock** you can photocopy and hand to anyone. Anyone with a copy can *lock* a
+box shut — but only **you**, holding the one physical **key**, can *unlock* it. The padlock is
+the **public key**; the key is the **private key**. You can publish the padlock to the whole
+world safely, because it only lets people lock things *for* you — never open them.
+
+Sealed Secrets maps onto that exactly:
+
+- The **controller** (inside your cluster) holds the **private key** — the only thing that can
+  *decrypt*. It never leaves the cluster and never goes to Git.
+- **kubeseal** (on your laptop) grabs the matching **public key** ("padlock") and uses it to
+  *encrypt* your Secret. Anyone is allowed to have the public key.
+- The result is a **SealedSecret**: locked ciphertext that *only your cluster's controller can
+  open*. That's why it's safe to commit to a public Git repo.
+
+Three terms you'll use all day:
+
+- **Sealed Secrets controller** — runs in the cluster, owns the private key, turns SealedSecrets
+  back into real Secrets.
+- **kubeseal** — the CLI that encrypts a plain Secret into a SealedSecret using the public key.
+- **SealedSecret** — the encrypted, commit-safe resource. Argo CD syncs it; the controller
+  decrypts it into a normal Kubernetes `Secret` your app reads.
+
+> The payoff: you keep the full GitOps workflow from Day 10 — *everything* declared in Git —
+> without ever putting a plaintext credential there.
+
 ## What you will build
 
 By the end of this article you will have:
@@ -460,46 +495,60 @@ The chart now contains `webapp/templates/sealed-secret.yaml`. When Argo CD syncs
 
 The webapp Deployment needs to inject `API_KEY` and `DB_PASSWORD` as environment variables. Kubernetes supports this via `envFrom: - secretRef:`, which mounts every key in the named Secret as an environment variable. This is cleaner than listing each key individually under `env:` — adding a new credential to the SealedSecret automatically makes it available in the Pod without touching the template again.
 
-Open the Deployment template and add the `envFrom` block:
+Rewrite `webapp/templates/deployment.yaml` with the full file below. It's the exact Day 6
+template with **one addition** — an `envFrom` block after `resources:` that mounts every key in
+`webapp-secret` as an environment variable. Copy the whole block (no partial edits):
 
 ```bash
-# The template file is at webapp/templates/deployment.yaml in the gitops-webapp repo
-```
-
-Edit `webapp/templates/deployment.yaml`. Find the `resources:` block inside the container spec and add `envFrom` immediately after it:
-
-```yaml
-        resources:
-          {{- toYaml .Values.resources | nindent 12 }}
-        envFrom:
-          - secretRef:
-              name: webapp-secret
-```
-
-The full container spec section after the edit looks like this:
-
-```yaml
+cat > webapp/templates/deployment.yaml << 'EOF'
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {% raw %}{{ include "webapp.fullname" . }}{% endraw %}
+  labels:
+    {% raw %}{{- include "webapp.labels" . | nindent 4 }}{% endraw %}
+spec:
+  replicas: {% raw %}{{ .Values.replicaCount }}{% endraw %}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: {% raw %}{{ .Values.rollingUpdate.maxSurge }}{% endraw %}
+      maxUnavailable: {% raw %}{{ .Values.rollingUpdate.maxUnavailable }}{% endraw %}
+  selector:
+    matchLabels:
+      {% raw %}{{- include "webapp.selectorLabels" . | nindent 6 }}{% endraw %}
+  template:
+    metadata:
+      labels:
+        {% raw %}{{- include "webapp.selectorLabels" . | nindent 8 }}{% endraw %}
+    spec:
       containers:
-        - name: {{ .Chart.Name }}
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
+        - name: {% raw %}{{ .Chart.Name }}{% endraw %}
+          image: "{% raw %}{{ .Values.image.repository }}:{{ .Values.image.tag }}{% endraw %}"
+          imagePullPolicy: {% raw %}{{ .Values.image.pullPolicy }}{% endraw %}
           ports:
             - name: http
-              containerPort: {{ .Values.service.targetPort }}
+              containerPort: {% raw %}{{ .Values.service.targetPort }}{% endraw %}
               protocol: TCP
           readinessProbe:
             httpGet:
               path: /
               port: http
+            initialDelaySeconds: {% raw %}{{ .Values.probes.readiness.initialDelaySeconds }}{% endraw %}
+            periodSeconds: {% raw %}{{ .Values.probes.readiness.periodSeconds }}{% endraw %}
           livenessProbe:
             httpGet:
               path: /
               port: http
+            initialDelaySeconds: {% raw %}{{ .Values.probes.liveness.initialDelaySeconds }}{% endraw %}
+            periodSeconds: {% raw %}{{ .Values.probes.liveness.periodSeconds }}{% endraw %}
           resources:
-            {{- toYaml .Values.resources | nindent 12 }}
+            {% raw %}{{- toYaml .Values.resources | nindent 12 }}{% endraw %}
+          # NEW: mount every key in webapp-secret as an environment variable.
           envFrom:
             - secretRef:
                 name: webapp-secret
+EOF
 ```
 
 The `secretRef.name` value is hardcoded to `webapp-secret` — the same name used in the `kubectl create secret` command that produced the SealedSecret. The Secret is not namespaced in the envFrom reference; Kubernetes always looks in the same namespace as the Pod.
