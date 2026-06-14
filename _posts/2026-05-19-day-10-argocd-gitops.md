@@ -20,6 +20,16 @@ Every deploy in this series so far was manual: `helm install`, `helm upgrade`, `
 
 **GitOps** flips the model. Instead of imperative commands, you declare the desired state in Git. Argo CD, running inside the cluster, watches that Git repository and continuously reconciles the cluster toward it. Push a commit to bump a replica count — Argo CD applies the change. Manually `kubectl scale` a deployment to zero — Argo CD detects the drift and heals it back. Need to roll back? `git revert` and push. The cluster is always a mirror of Git — and Git is the audit log, the change history, and the access control layer.
 
+> **Three terms, pinned down before you start:**
+> - **GitOps** — a way of running infrastructure where **Git is the single source of truth**.
+>   You change the system by committing to Git, never by running commands at the cluster directly.
+> - **Imperative vs declarative** — `kubectl apply` and `helm upgrade` are *imperative* ("do this
+>   now"). GitOps is *declarative* — you describe the desired end state and a controller makes
+>   reality match it.
+> - **Argo CD** — the controller that makes it real. It runs *inside* your cluster, watches your
+>   Git repo, and continuously reconciles the cluster to match it — applying your commits and
+>   undoing manual drift.
+
 ## What you will build
 
 By the end of this article you will have:
@@ -591,7 +601,7 @@ Read top to bottom. The **Application resource** (blue) is the central object �
 
 **`spec.syncPolicy.automated`** (grey) is what separates GitOps from "Argo CD as a manual deploy tool". With `prune: true`, resources deleted from Git are also deleted from the cluster. With `selfHeal: true`, any manual cluster change — `kubectl scale`, `kubectl edit`, even patching a label — is overwritten on the next sync cycle. Without this block, Argo CD only reports drift. It does not act unless you click "Sync".
 
-The key insight: the Application resource is itself declarative. You can commit `webapp-app.yaml` to Git and apply it via another Argo CD Application (the "App of Apps" pattern). That is how large organisations bootstrap entire fleets of clusters from a single repo — but that is a Day 15 topic.
+The key insight: the Application resource is itself declarative. You can commit `webapp-app.yaml` to Git and apply it via another Argo CD Application (the "App of Apps" pattern). That is how large organisations bootstrap entire fleets of clusters from a single repo — but that's an advanced Argo CD pattern beyond this series (it gets a mention in Day 30's "where to go next").
 
 Create the Application manifest:
 
