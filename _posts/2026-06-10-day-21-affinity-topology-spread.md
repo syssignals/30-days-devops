@@ -552,9 +552,59 @@ cd ~/30-days-devops/day-12/gitops-webapp
 
 ### 5.1 — Defaults in `webapp/values.yaml`
 
-Append:
+Rewrite `webapp/values.yaml` with the full file below — your existing defaults plus a new
+`topologySpread` block at the bottom:
 
-```yaml
+```bash
+cat > webapp/values.yaml << 'EOF'
+# Default values for webapp chart.
+# Override these from the CLI (--set) or from a values file (-f).
+
+replicaCount: 3
+
+image:
+  repository: nginx
+  tag: "1.25-alpine"
+  pullPolicy: IfNotPresent
+
+rollingUpdate:
+  maxSurge: 1
+  maxUnavailable: 0
+
+service:
+  type: NodePort
+  port: 80
+  targetPort: 80
+  nodePort: 30080
+
+probes:
+  readiness:
+    initialDelaySeconds: 5
+    periodSeconds: 5
+  liveness:
+    initialDelaySeconds: 10
+    periodSeconds: 10
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 100m
+    memory: 128Mi
+
+# Horizontal Pod Autoscaler defaults (Day 12).
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 60
+
+# PodDisruptionBudget defaults (Day 16).
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 50%
+
 # Topology spread defaults. Soft (ScheduleAnyway) so the constraint can
 # never block scheduling — it biases the scheduler toward even spread
 # across nodes. Pairs with the PodDisruptionBudget (Day 16): spread
@@ -564,14 +614,50 @@ topologySpread:
   enabled: false
   maxSkew: 1
   whenUnsatisfiable: ScheduleAnyway
+EOF
 ```
 
 ### 5.2 — The template block in `webapp/templates/deployment.yaml`
 
-Inside the Pod template's `spec:`, after the Day 13/14 `serviceAccountName` / `securityContext` block and before `initContainers:`, add:
+Rewrite `webapp/templates/deployment.yaml` with the full file below. Compared to your Day 18
+version it adds **one block** — a conditional `topologySpreadConstraints:` in the Pod template's
+`spec:`, right after the Pod-level `securityContext` and before `initContainers:`:
 
-```yaml
-{% raw %}      {{- if .Values.topologySpread.enabled }}
+```bash
+cat > webapp/templates/deployment.yaml << 'EOF'
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {% raw %}{{ include "webapp.fullname" . }}{% endraw %}
+  labels:
+    {% raw %}{{- include "webapp.labels" . | nindent 4 }}{% endraw %}
+spec:
+  {% raw %}{{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}{% endraw %}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: {% raw %}{{ .Values.rollingUpdate.maxSurge }}{% endraw %}
+      maxUnavailable: {% raw %}{{ .Values.rollingUpdate.maxUnavailable }}{% endraw %}
+  selector:
+    matchLabels:
+      {% raw %}{{- include "webapp.selectorLabels" . | nindent 6 }}{% endraw %}
+  template:
+    metadata:
+      labels:
+        {% raw %}{{- include "webapp.selectorLabels" . | nindent 8 }}{% endraw %}
+    spec:
+      serviceAccountName: webapp-runtime
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        fsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
+      {% raw %}{{- if .Values.topologySpread.enabled }}
       topologySpreadConstraints:
         - maxSkew: {{ .Values.topologySpread.maxSkew }}
           topologyKey: kubernetes.io/hostname
@@ -580,16 +666,142 @@ Inside the Pod template's `spec:`, after the Day 13/14 `serviceAccountName` / `s
             matchLabels:
               {{- include "webapp.selectorLabels" . | nindent 14 }}
       {{- end }}{% endraw %}
+      initContainers:
+        # Ordinary init container: runs once, must exit 0 before anything else
+        # starts. Renders the page nginx serves, into the shared volume.
+        - name: init-content
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              cat > /shared/index.html <<HTML
+              <!doctype html><html><body>
+              <h1>{% raw %}{{ .Chart.Name }}{% endraw %}</h1>
+              <p>Rendered by the init container at $(date -u +%FT%TZ)</p>
+              </body></html>
+              HTML
+              echo "init-content: wrote /shared/index.html"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: shared-content
+              mountPath: /shared
+        # Native sidecar: an init container with restartPolicy: Always. It
+        # STARTS during the init phase (up before nginx) but never exits —
+        # the kubelet treats it as a long-lived sidecar.
+        - name: clock-sidecar
+          image: busybox:1.36
+          restartPolicy: Always          # <-- the one line that makes it a sidecar
+          command:
+            - sh
+            - -c
+            - |
+              while true; do
+                echo "ok $(date -u +%FT%TZ)" > /shared/health.txt
+                sleep 15
+              done
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: shared-content
+              mountPath: /shared
+      containers:
+        - name: {% raw %}{{ .Chart.Name }}{% endraw %}
+          image: "{% raw %}{{ .Values.image.repository }}:{{ .Values.image.tag }}{% endraw %}"
+          imagePullPolicy: {% raw %}{{ .Values.image.pullPolicy }}{% endraw %}
+          ports:
+            - name: http
+              containerPort: {% raw %}{{ .Values.service.targetPort }}{% endraw %}
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: {% raw %}{{ .Values.probes.readiness.initialDelaySeconds }}{% endraw %}
+            periodSeconds: {% raw %}{{ .Values.probes.readiness.periodSeconds }}{% endraw %}
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: {% raw %}{{ .Values.probes.liveness.initialDelaySeconds }}{% endraw %}
+            periodSeconds: {% raw %}{{ .Values.probes.liveness.periodSeconds }}{% endraw %}
+          resources:
+            {% raw %}{{- toYaml .Values.resources | nindent 12 }}{% endraw %}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: shared-content
+              mountPath: /usr/share/nginx/html
+          envFrom:
+            - secretRef:
+                name: webapp-secret
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: shared-content
+          emptyDir: {}
+EOF
 ```
 
 The `labelSelector` reuses the chart's `selectorLabels` helper — the same labels the Deployment selector, the Service, and the Day 16 PDB already agree on. The constraint counts exactly the Pods that are replicas of this release, nothing else.
 
 ### 5.3 — Enable in `webapp/values-dev.yaml`
 
-```yaml
+Rewrite `webapp/values-dev.yaml` with the full file below — your Day 16 dev values plus the
+topology-spread on-switch at the bottom:
+
+```bash
+cat > webapp/values-dev.yaml << 'EOF'
+# Dev environment overrides — merged over webapp/values.yaml at sync time.
+# Only include keys that differ from the chart defaults.
+
+replicaCount: 3
+
+# Day 14: unprivileged nginx image — runs as UID 101, listens on 8080.
+image:
+  repository: nginxinc/nginx-unprivileged
+  tag: "1.27-alpine"
+  pullPolicy: IfNotPresent
+
+# ClusterIP so traffic enters through the NGINX Ingress, not a NodePort.
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8080
+
+resources:
+  requests:
+    cpu: 25m
+    memory: 32Mi
+  limits:
+    cpu: 50m
+    memory: 64Mi
+
+# Day 12: HPA on for the dev environment.
+autoscaling:
+  enabled: true
+
+# Day 16: PDB on for the dev environment.
+podDisruptionBudget:
+  enabled: true
+
 # Day 21: prefer even spread of webapp replicas across nodes.
 topologySpread:
   enabled: true
+EOF
 ```
 
 ### 5.4 — Render-check, commit, sync
