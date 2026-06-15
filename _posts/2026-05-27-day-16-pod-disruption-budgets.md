@@ -115,9 +115,9 @@ Expected output:
 
 ```text
 NAME                          STATUS   ROLES           AGE   VERSION
-devops-cluster-control-plane  Ready    control-plane   2w    v1.30.0
-devops-cluster-worker         Ready    <none>          2w    v1.30.0
-devops-cluster-worker2        Ready    <none>          2w    v1.30.0
+devops-cluster-control-plane  Ready    control-plane   2w    v1.29.4
+devops-cluster-worker         Ready    <none>          2w    v1.29.4
+devops-cluster-worker2        Ready    <none>          2w    v1.29.4
 
 NAME                            READY   STATUS    RESTARTS   AGE   IP           NODE                    NOMINATED NODE   READINESS GATES
 webapp-webapp-7d8c6b4f9-aa1bb   1/1     Running   0          1d    10.244.1.7   devops-cluster-worker    <none>           <none>
@@ -148,9 +148,54 @@ cd ~/30-days-devops/day-12/gitops-webapp
 
 ### 1.1 — Add defaults to `webapp/values.yaml`
 
-Append the following block to the end of the chart's default values:
+Rewrite `webapp/values.yaml` with the full file below — your existing chart defaults plus a new
+`podDisruptionBudget` block at the bottom:
 
-```yaml
+```bash
+cat > webapp/values.yaml << 'EOF'
+# Default values for webapp chart.
+# Override these from the CLI (--set) or from a values file (-f).
+
+replicaCount: 3
+
+image:
+  repository: nginx
+  tag: "1.25-alpine"
+  pullPolicy: IfNotPresent
+
+rollingUpdate:
+  maxSurge: 1
+  maxUnavailable: 0
+
+service:
+  type: NodePort
+  port: 80
+  targetPort: 80
+  nodePort: 30080
+
+probes:
+  readiness:
+    initialDelaySeconds: 5
+    periodSeconds: 5
+  liveness:
+    initialDelaySeconds: 10
+    periodSeconds: 10
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 100m
+    memory: 128Mi
+
+# Horizontal Pod Autoscaler defaults (Day 12).
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 60
+
 # PodDisruptionBudget defaults.
 # Disabled by default so installing this chart at chart-defaults does not
 # create a PDB that blocks node maintenance in clusters that don't expect one.
@@ -161,11 +206,13 @@ podDisruptionBudget:
   # because it composes cleanly with HPA: as the HPA scales up,
   # minAvailable: 50% scales with it.
   minAvailable: 50%
+EOF
 ```
 
 ### 1.2 — Create `webapp/templates/poddisruptionbudget.yaml`
 
-```yaml
+```bash
+cat > webapp/templates/poddisruptionbudget.yaml << 'EOF'
 {% raw %}{{- if .Values.podDisruptionBudget.enabled }}
 apiVersion: policy/v1
 kind: PodDisruptionBudget
@@ -182,17 +229,52 @@ spec:
       {{- include "webapp.selectorLabels" . | nindent 6 }}
   minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
 {{- end }}{% endraw %}
+EOF
 ```
 
 `apiVersion: policy/v1` is the stable PDB API since Kubernetes 1.21 — do not use the older `policy/v1beta1`, which was removed in 1.25.
 
 ### 1.3 — Enable in `webapp/values-dev.yaml`
 
-```yaml
+Rewrite `webapp/values-dev.yaml` with the full file below — your Day 14 dev values plus the PDB
+on-switch at the bottom:
+
+```bash
+cat > webapp/values-dev.yaml << 'EOF'
+# Dev environment overrides — merged over webapp/values.yaml at sync time.
+# Only include keys that differ from the chart defaults.
+
+replicaCount: 3
+
+# Day 14: unprivileged nginx image — runs as UID 101, listens on 8080.
+image:
+  repository: nginxinc/nginx-unprivileged
+  tag: "1.27-alpine"
+  pullPolicy: IfNotPresent
+
+# ClusterIP so traffic enters through the NGINX Ingress, not a NodePort.
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8080
+
+resources:
+  requests:
+    cpu: 25m
+    memory: 32Mi
+  limits:
+    cpu: 50m
+    memory: 64Mi
+
+# Day 12: HPA on for the dev environment.
+autoscaling:
+  enabled: true
+
 # Day 16: turn on the PDB for the dev environment.
 # minAvailable inherits from values.yaml (50%).
 podDisruptionBudget:
   enabled: true
+EOF
 ```
 
 ### 1.4 — Commit, push, sync
