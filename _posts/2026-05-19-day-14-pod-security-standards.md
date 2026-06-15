@@ -220,7 +220,9 @@ One additional change is required by `readOnlyRootFilesystem: true` (which we ad
 
 ## Part 3 — Patch the chart
 
-Four files change. Three in `webapp/templates/`, one in `webapp/`.
+Two files change: `webapp/values-dev.yaml` (image + port) and
+`webapp/templates/deployment.yaml` (the security contexts). Both are delivered as complete
+copy-paste files below.
 
 Open the chart directory:
 
@@ -230,30 +232,76 @@ cd ~/30-days-devops/day-12/gitops-webapp   # or wherever your clone lives
 
 ### 3.1 — `webapp/values-dev.yaml`: switch image and port
 
-Add or update the `image` block, and change `service.targetPort`:
+Rewrite `webapp/values-dev.yaml` with the full file below — your Day 12 dev values with the
+**image switched to the unprivileged nginx** and **`targetPort` moved to 8080**:
 
-```yaml
-# webapp/values-dev.yaml additions
+```bash
+cat > webapp/values-dev.yaml << 'EOF'
+# Dev environment overrides — merged over webapp/values.yaml at sync time.
+# Only include keys that differ from the chart defaults.
+
+replicaCount: 3
+
+# Day 14: unprivileged nginx image — runs as UID 101, listens on 8080.
 image:
   repository: nginxinc/nginx-unprivileged   # was: nginx
-  tag: "1.27-alpine"                        # unchanged
+  tag: "1.27-alpine"
   pullPolicy: IfNotPresent
 
+# ClusterIP so traffic enters through the NGINX Ingress, not a NodePort.
+# This matches the values-ingress.yaml pattern established in Day 7.
 service:
   type: ClusterIP
   port: 80                                  # external Service port unchanged
-  targetPort: 8080                          # was: 80 — the unprivileged image listens here
+  targetPort: 8080                          # Day 14: unprivileged image listens here
+
+resources:
+  requests:
+    cpu: 25m
+    memory: 32Mi
+  limits:
+    cpu: 50m
+    memory: 64Mi
+
+# Day 12: HPA on for the dev environment.
+autoscaling:
+  enabled: true
+EOF
 ```
 
 The Service still publishes port 80 to the ingress and any other internal client; only the backend port (where the Service forwards to the container) moves to 8080. Existing routes do not break.
 
 ### 3.2 — `webapp/templates/deployment.yaml`: securityContexts + emptyDir
 
-This is the largest change. Open the file and make three additions to the Pod template:
+This is the largest change. Rewrite `webapp/templates/deployment.yaml` with the full file below.
+It's your Day 13 template with three additions: a **Pod-level `securityContext`**, a
+**container-level `securityContext` + `volumeMounts`**, and a **`volumes`** block for the
+writable `/tmp`:
 
-**Addition A — Pod-level `securityContext`**, immediately after `automountServiceAccountToken: false` (which Day 13 placed under the Pod `spec:`):
-
-```yaml
+```bash
+cat > webapp/templates/deployment.yaml << 'EOF'
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {% raw %}{{ include "webapp.fullname" . }}{% endraw %}
+  labels:
+    {% raw %}{{- include "webapp.labels" . | nindent 4 }}{% endraw %}
+spec:
+  {% raw %}{{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}{% endraw %}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: {% raw %}{{ .Values.rollingUpdate.maxSurge }}{% endraw %}
+      maxUnavailable: {% raw %}{{ .Values.rollingUpdate.maxUnavailable }}{% endraw %}
+  selector:
+    matchLabels:
+      {% raw %}{{- include "webapp.selectorLabels" . | nindent 6 }}{% endraw %}
+  template:
+    metadata:
+      labels:
+        {% raw %}{{- include "webapp.selectorLabels" . | nindent 8 }}{% endraw %}
     spec:
       serviceAccountName: webapp-runtime
       automountServiceAccountToken: false
@@ -261,21 +309,34 @@ This is the largest change. Open the file and make three additions to the Pod te
       # These fields satisfy the Pod Security Standard "restricted" profile.
       securityContext:
         runAsNonRoot: true
-        runAsUser: 101                       # nginx user in the unprivileged image
+        runAsUser: 101              # nginx user in the unprivileged image
         runAsGroup: 101
         fsGroup: 101
         seccompProfile:
           type: RuntimeDefault
       containers:
         - name: {% raw %}{{ .Chart.Name }}{% endraw %}
-```
-
-**Addition B — Container-level `securityContext` and `volumeMounts`**, inside the `containers[0]` block, after the `resources:` field that Day 6 set and before the `envFrom:` block that Day 11 added:
-
-```yaml
+          image: "{% raw %}{{ .Values.image.repository }}:{{ .Values.image.tag }}{% endraw %}"
+          imagePullPolicy: {% raw %}{{ .Values.image.pullPolicy }}{% endraw %}
+          ports:
+            - name: http
+              containerPort: {% raw %}{{ .Values.service.targetPort }}{% endraw %}
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: {% raw %}{{ .Values.probes.readiness.initialDelaySeconds }}{% endraw %}
+            periodSeconds: {% raw %}{{ .Values.probes.readiness.periodSeconds }}{% endraw %}
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: {% raw %}{{ .Values.probes.liveness.initialDelaySeconds }}{% endraw %}
+            periodSeconds: {% raw %}{{ .Values.probes.liveness.periodSeconds }}{% endraw %}
           resources:
             {% raw %}{{- toYaml .Values.resources | nindent 12 }}{% endraw %}
-          # Container-level security context — strictest layer.
+          # Container-level security context — the strictest layer.
           # allowPrivilegeEscalation and capabilities can only be set here.
           securityContext:
             allowPrivilegeEscalation: false
@@ -285,47 +346,8 @@ This is the largest change. Open the file and make three additions to the Pod te
                 - ALL
           volumeMounts:
             # nginx-unprivileged writes its PID file and temp paths to /tmp.
-            # Mounting an emptyDir keeps that writable when the rest of the
-            # root filesystem is read-only.
-            - name: tmp
-              mountPath: /tmp
-          envFrom:
-            - secretRef:
-                name: webapp-secret
-```
-
-**Addition C — `volumes:`**, immediately after the `containers:` list closes:
-
-```yaml
-      volumes:
-        - name: tmp
-          emptyDir: {}
-```
-
-The full post-edit `template.spec` (the Pod template's spec, not the Deployment spec) should now look like:
-
-```yaml
-    spec:
-      serviceAccountName: webapp-runtime
-      automountServiceAccountToken: false
-      securityContext:
-        runAsNonRoot: true
-        runAsUser: 101
-        runAsGroup: 101
-        fsGroup: 101
-        seccompProfile:
-          type: RuntimeDefault
-      containers:
-        - name: {% raw %}{{ .Chart.Name }}{% endraw %}
-          image: "{% raw %}{{ .Values.image.repository }}:{{ .Values.image.tag }}{% endraw %}"
-          # ... ports / probes / resources (unchanged from earlier days) ...
-          securityContext:
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            capabilities:
-              drop:
-                - ALL
-          volumeMounts:
+            # An emptyDir keeps /tmp writable while the rest of the root
+            # filesystem stays read-only.
             - name: tmp
               mountPath: /tmp
           envFrom:
@@ -334,6 +356,7 @@ The full post-edit `template.spec` (the Pod template's spec, not the Deployment 
       volumes:
         - name: tmp
           emptyDir: {}
+EOF
 ```
 
 ### 3.3 — Sanity-render before committing
