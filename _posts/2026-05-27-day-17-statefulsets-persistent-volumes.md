@@ -340,7 +340,13 @@ Four resources, each with the predictable name the diagram described:
 The Headless Service publishes one A record per Pod. Confirm it works from inside the cluster by launching a one-shot `busybox` Pod and running `nslookup`:
 
 ```bash
+# Run in the database namespace, which has no Pod Security enforcement.
+# A bare busybox Pod has no securityContext, so it would be rejected by the
+# "restricted" profile that Day 14 enforces on the default namespace — but
+# DNS resolves cross-namespace anyway, so the database namespace is the right
+# (and working) place to run this from.
 kubectl run -it --rm dnstest \
+  --namespace database \
   --image=busybox:1.36 \
   --restart=Never \
   -- nslookup postgres-0.postgres.database.svc.cluster.local
