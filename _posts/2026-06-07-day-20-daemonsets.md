@@ -343,35 +343,37 @@ The Pod knows the name of the node it landed on without any external config — 
 
 ## Part 3 — Add a toleration so the control-plane is covered too
 
-`kubectl edit` then `apply` is the fastest way to demonstrate this. Open the file you wrote and add a `tolerations:` block to `spec.template.spec`, before `containers:`:
-
-```yaml
-    spec:
-      tolerations:
-        # Tolerate the standard control-plane NoSchedule taint so that
-        # the scheduler is allowed to place this DaemonSet's Pod on the
-        # control-plane node. `operator: Exists` matches the taint by key
-        # alone, ignoring the value (this taint has none). Set it
-        # explicitly: if you OMIT the operator it defaults to `Equal`,
-        # which also compares values — fine here (both empty), but a
-        # frequent source of silent mismatches on taints that carry values.
-        - key: node-role.kubernetes.io/control-plane
-          operator: Exists
-          effect: NoSchedule
-      containers:
-        ...
-```
-
-Re-apply:
+The fastest way to add the toleration is `kubectl patch`, which merges a `tolerations` block
+into the live DaemonSet's Pod template — no file editing, idempotent, copy-paste in one go:
 
 ```bash
-kubectl apply -f node-info.yaml
+kubectl patch daemonset node-info -n agents --type=merge -p '
+{
+  "spec": {
+    "template": {
+      "spec": {
+        "tolerations": [
+          {
+            "key": "node-role.kubernetes.io/control-plane",
+            "operator": "Exists",
+            "effect": "NoSchedule"
+          }
+        ]
+      }
+    }
+  }
+}'
 ```
+
+`operator: Exists` matches the taint by **key alone**, ignoring the value (this control-plane
+taint has none). If you omit `operator` it defaults to `Equal`, which also compares values — a
+frequent source of silent mismatches on taints that *do* carry a value, so set `Exists`
+explicitly for valueless taints like this one.
 
 Expected output:
 
 ```text
-daemonset.apps/node-info configured
+daemonset.apps/node-info patched
 ```
 
 A new Pod immediately appears on the control-plane:
@@ -402,27 +404,19 @@ node-info-ccccc   1/1     Running   0          20s   10.244.0.6   devops-cluster
 
 ## Part 4 — `nodeSelector`: scoping the DaemonSet to a subset of nodes
 
-For agents that should run only on certain node classes (e.g., GPU nodes, edge nodes, only-windows nodes), DaemonSets use the same `nodeSelector` field every other Pod uses. Demonstrate by adding a selector to the file:
-
-```yaml
-    spec:
-      nodeSelector:
-        agents/role: edge
-      tolerations:
-        ...
-```
-
-Re-apply:
+For agents that should run only on certain node classes (e.g., GPU nodes, edge nodes, only-windows nodes), DaemonSets use the same `nodeSelector` field every other Pod uses. Add one with a patch:
 
 ```bash
-kubectl apply -f node-info.yaml
+kubectl patch daemonset node-info -n agents --type=merge \
+  -p '{"spec":{"template":{"spec":{"nodeSelector":{"agents/role":"edge"}}}}}'
+
 kubectl get daemonset -n agents node-info
 ```
 
 Expected output:
 
 ```text
-daemonset.apps/node-info configured
+daemonset.apps/node-info patched
 
 NAME        DESIRED   CURRENT   READY   UP-TO-DATE   AVAILABLE   NODE SELECTOR    AGE
 node-info   0         0         0       0            0           agents/role=edge 3m
@@ -459,11 +453,12 @@ node-info-ddddd   1/1     Running   0          8s    devops-cluster-worker
 
 One Pod, on the one matching node. Label a second node and the count grows to 2 automatically — the same per-node guarantee, now scoped.
 
-For the rest of the article, revert the selector so the DaemonSet returns to "every node":
+For the rest of the article, remove the `nodeSelector` so the DaemonSet returns to "every node".
+Merge-patching the field to `null` deletes it; the toleration from Part 3 stays in place:
 
 ```bash
-# Drop the nodeSelector from node-info.yaml (delete the two lines), then:
-kubectl apply -f node-info.yaml
+kubectl patch daemonset node-info -n agents --type=merge \
+  -p '{"spec":{"template":{"spec":{"nodeSelector":null}}}}'
 
 # And clean up the demo label
 kubectl label node devops-cluster-worker agents/role-
@@ -472,7 +467,7 @@ kubectl label node devops-cluster-worker agents/role-
 Expected output:
 
 ```text
-daemonset.apps/node-info configured
+daemonset.apps/node-info patched
 node/devops-cluster-worker unlabeled
 ```
 
@@ -498,17 +493,17 @@ Expected output:
 
 `maxUnavailable: 1` — only one Pod terminated at a time. `maxSurge: 0` — never run more than one Pod per node (DaemonSets default to no surge; you can opt in with `maxSurge: 1` since 1.25 if your workload supports two replicas briefly on one node).
 
-Change the image and apply:
+Change the image with `kubectl set image` — one command that patches the Pod template and
+triggers the rollout:
 
 ```bash
-sed -i.bak 's|busybox:1.36|busybox:1.37|' node-info.yaml
-kubectl apply -f node-info.yaml
+kubectl set image daemonset/node-info node-info=busybox:1.37 -n agents
 ```
 
 Expected output:
 
 ```text
-daemonset.apps/node-info configured
+daemonset.apps/node-info image updated
 ```
 
 Watch the rollout walk node by node:
