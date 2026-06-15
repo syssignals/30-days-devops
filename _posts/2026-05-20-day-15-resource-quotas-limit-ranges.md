@@ -543,7 +543,9 @@ Expected output:
 resourcequota/default-namespace-quota patched
 ```
 
-Apply the k6 load Job from Day 12 (it consumes 100m on its own when running):
+Apply the k6 load Job from Day 12 (it consumes 100m on its own when running). Its Pod is already
+hardened for the `restricted` profile, so it admits cleanly into the locked-down namespace from
+Day 14, and the LimitRange stamps a `25m` request onto it:
 
 ```bash
 kubectl apply -f ~/30-days-devops/day-12/k6-load.yaml

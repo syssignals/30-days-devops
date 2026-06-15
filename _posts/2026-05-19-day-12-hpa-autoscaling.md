@@ -570,10 +570,22 @@ spec:
   template:
     spec:
       restartPolicy: Never
+      # Hardened so this load-test Pod still admits once the "restricted"
+      # Pod Security profile is enforced on the namespace in Day 14. k6 runs
+      # fine as a non-root user and writes nothing to the root filesystem.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 12345
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: k6
           image: grafana/k6:0.51.0
           args: ["run", "/scripts/load.js"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
           volumeMounts:
             - name: script
               mountPath: /scripts
