@@ -110,7 +110,7 @@ kubectl get application -n argocd webapp
 Expected output:
 
 ```text
-Server Version: v1.30.0
+Server Version: v1.29.4
 
 NAME     SYNC STATUS   HEALTH STATUS
 webapp   Synced        Healthy
@@ -135,15 +135,50 @@ All changes are in `webapp/templates/deployment.yaml` in the `gitops-webapp` rep
 cd ~/30-days-devops/day-12/gitops-webapp
 ```
 
-### 1.1 — Add `initContainers` to the Pod spec
+### 1.1 — Rewrite `deployment.yaml` with the init container, sidecar, and shared volume
 
-Open `webapp/templates/deployment.yaml`. Immediately after the Pod-level `securityContext` block (added on Day 14) and before the `containers:` line, insert an `initContainers:` block:
+Rewrite `webapp/templates/deployment.yaml` with the full file below. Compared to your Day 14
+version it adds three things: an **`initContainers:`** block (the `init-content` init container
+and the `clock-sidecar` native sidecar), a **`shared-content` `volumeMount`** on nginx at its
+web root, and a **`shared-content` `emptyDir`** volume:
 
-```yaml
-{% raw %}      initContainers:
-        # Ordinary init container: runs once, must exit 0 before anything
-        # else starts. Renders the page nginx will serve, into the shared
-        # emptyDir volume.
+```bash
+cat > webapp/templates/deployment.yaml << 'EOF'
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {% raw %}{{ include "webapp.fullname" . }}{% endraw %}
+  labels:
+    {% raw %}{{- include "webapp.labels" . | nindent 4 }}{% endraw %}
+spec:
+  {% raw %}{{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}{% endraw %}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: {% raw %}{{ .Values.rollingUpdate.maxSurge }}{% endraw %}
+      maxUnavailable: {% raw %}{{ .Values.rollingUpdate.maxUnavailable }}{% endraw %}
+  selector:
+    matchLabels:
+      {% raw %}{{- include "webapp.selectorLabels" . | nindent 6 }}{% endraw %}
+  template:
+    metadata:
+      labels:
+        {% raw %}{{- include "webapp.selectorLabels" . | nindent 8 }}{% endraw %}
+    spec:
+      serviceAccountName: webapp-runtime
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        fsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        # Ordinary init container: runs once, must exit 0 before anything else
+        # starts. Renders the page nginx serves, into the shared volume.
         - name: init-content
           image: busybox:1.36
           command:
@@ -152,7 +187,7 @@ Open `webapp/templates/deployment.yaml`. Immediately after the Pod-level `securi
             - |
               cat > /shared/index.html <<HTML
               <!doctype html><html><body>
-              <h1>{{ .Chart.Name }}</h1>
+              <h1>{% raw %}{{ .Chart.Name }}{% endraw %}</h1>
               <p>Rendered by the init container at $(date -u +%FT%TZ)</p>
               </body></html>
               HTML
@@ -165,9 +200,9 @@ Open `webapp/templates/deployment.yaml`. Immediately after the Pod-level `securi
           volumeMounts:
             - name: shared-content
               mountPath: /shared
-        # Native sidecar: an init container with restartPolicy: Always.
-        # It STARTS during the init phase (so it is up before nginx) but
-        # never exits — the kubelet treats it as a long-lived sidecar.
+        # Native sidecar: an init container with restartPolicy: Always. It
+        # STARTS during the init phase (up before nginx) but never exits —
+        # the kubelet treats it as a long-lived sidecar.
         - name: clock-sidecar
           image: busybox:1.36
           restartPolicy: Always          # <-- the one line that makes it a sidecar
@@ -186,32 +221,59 @@ Open `webapp/templates/deployment.yaml`. Immediately after the Pod-level `securi
               drop: ["ALL"]
           volumeMounts:
             - name: shared-content
-              mountPath: /shared{% endraw %}
-```
-
-Both extra containers carry the same `securityContext` the main container got on Day 14 — `allowPrivilegeEscalation: false`, `readOnlyRootFilesystem: true`, `capabilities.drop: ["ALL"]` — because the `default` namespace enforces PSS `restricted` and **every container in the Pod is checked, init and sidecar included**. They inherit `runAsNonRoot`, `runAsUser: 101`, and the `seccompProfile` from the Pod-level `securityContext`. Writing to `/shared` works despite `readOnlyRootFilesystem: true` because `/shared` is a mounted `emptyDir`, not part of the read-only root filesystem.
-
-### 1.2 — Mount the shared volume into nginx and declare the volume
-
-In the same file, add a `volumeMount` for `shared-content` to the nginx container (alongside the `/tmp` mount from Day 14), pointing at nginx's web root:
-
-```yaml
-{% raw %}          volumeMounts:
+              mountPath: /shared
+      containers:
+        - name: {% raw %}{{ .Chart.Name }}{% endraw %}
+          image: "{% raw %}{{ .Values.image.repository }}:{{ .Values.image.tag }}{% endraw %}"
+          imagePullPolicy: {% raw %}{{ .Values.image.pullPolicy }}{% endraw %}
+          ports:
+            - name: http
+              containerPort: {% raw %}{{ .Values.service.targetPort }}{% endraw %}
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: {% raw %}{{ .Values.probes.readiness.initialDelaySeconds }}{% endraw %}
+            periodSeconds: {% raw %}{{ .Values.probes.readiness.periodSeconds }}{% endraw %}
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: {% raw %}{{ .Values.probes.liveness.initialDelaySeconds }}{% endraw %}
+            periodSeconds: {% raw %}{{ .Values.probes.liveness.periodSeconds }}{% endraw %}
+          resources:
+            {% raw %}{{- toYaml .Values.resources | nindent 12 }}{% endraw %}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
             - name: tmp
               mountPath: /tmp
             - name: shared-content
-              mountPath: /usr/share/nginx/html{% endraw %}
-```
-
-Then add the new volume to the Pod's `volumes:` list (next to the `tmp` volume):
-
-```yaml
+              mountPath: /usr/share/nginx/html
+          envFrom:
+            - secretRef:
+                name: webapp-secret
       volumes:
         - name: tmp
           emptyDir: {}
         - name: shared-content
           emptyDir: {}
+EOF
 ```
+
+Both extra containers carry the same `securityContext` the main container got on Day 14 — `allowPrivilegeEscalation: false`, `readOnlyRootFilesystem: true`, `capabilities.drop: ["ALL"]` — because the `default` namespace enforces PSS `restricted` and **every container in the Pod is checked, init and sidecar included**. They inherit `runAsNonRoot`, `runAsUser: 101`, and the `seccompProfile` from the Pod-level `securityContext`. Writing to `/shared` works despite `readOnlyRootFilesystem: true` because `/shared` is a mounted `emptyDir`, not part of the read-only root filesystem.
+
+### 1.2 — How the shared volume is wired
+
+The full file above already does this — no separate edit needed. Two of its lines carry the
+shared volume: nginx mounts `shared-content` at `/usr/share/nginx/html` (its web root, alongside
+the `/tmp` mount from Day 14), and the Pod declares a second `emptyDir` named `shared-content`
+next to `tmp`.
 
 Mounting an `emptyDir` at `/usr/share/nginx/html` hides the image's built-in default page and serves whatever the init container and sidecar write there instead. The volume is shared by all three containers — init-content writes it, clock-sidecar keeps writing to it, nginx reads from it. `emptyDir` lives as long as the Pod and is the canonical way to pass files between containers in the same Pod.
 
