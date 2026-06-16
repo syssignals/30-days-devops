@@ -523,7 +523,73 @@ it's opt-in per environment.
 
 ### 5.1 — `webapp/values.yaml` defaults
 
-```yaml
+Rewrite `webapp/values.yaml` with the full file below — your existing defaults plus a new
+`verticalAutoscaler` block at the bottom:
+
+```bash
+cat > webapp/values.yaml << 'EOF'
+# Default values for webapp chart.
+# Override these from the CLI (--set) or from a values file (-f).
+
+replicaCount: 3
+
+image:
+  repository: nginx
+  tag: "1.25-alpine"
+  pullPolicy: IfNotPresent
+
+rollingUpdate:
+  maxSurge: 1
+  maxUnavailable: 0
+
+service:
+  type: NodePort
+  port: 80
+  targetPort: 80
+  nodePort: 30080
+
+probes:
+  readiness:
+    initialDelaySeconds: 5
+    periodSeconds: 5
+  liveness:
+    initialDelaySeconds: 10
+    periodSeconds: 10
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 100m
+    memory: 128Mi
+
+# Horizontal Pod Autoscaler defaults (Day 12).
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 60
+
+# PodDisruptionBudget defaults (Day 16).
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 50%
+
+# Topology spread defaults (Day 21).
+topologySpread:
+  enabled: false
+  maxSkew: 1
+  whenUnsatisfiable: ScheduleAnyway
+
+# Application config delivered as a ConfigMap (Day 24).
+appConfig:
+  enabled: false
+  data:
+    APP_ENV: production
+    LOG_LEVEL: info
+    FEATURE_DARK_MODE: "false"
+
 # Vertical Pod Autoscaler — recommendation ONLY. updateMode: Off is the one
 # mode that is safe to run alongside the CPU HPA (Day 12): VPA never changes
 # requests, so the two autoscalers cannot fight. Read the advice with
@@ -531,11 +597,13 @@ it's opt-in per environment.
 verticalAutoscaler:
   enabled: false
   updateMode: "Off"
+EOF
 ```
 
 ### 5.2 — `webapp/templates/vpa.yaml` (new, gated)
 
-```yaml
+```bash
+cat > webapp/templates/vpa.yaml << 'EOF'
 {% raw %}{{- if .Values.verticalAutoscaler.enabled }}
 apiVersion: autoscaling.k8s.io/v1
 kind: VerticalPodAutoscaler
@@ -551,18 +619,67 @@ spec:
   updatePolicy:
     updateMode: {{ .Values.verticalAutoscaler.updateMode | quote }}
 {{- end }}{% endraw %}
+EOF
 ```
 
 ### 5.3 — Enable in `webapp/values-dev.yaml`, render-check, ship
 
-```yaml
-# Day 26: recommendation-only right-sizing advice for the webapp.
-verticalAutoscaler:
-  enabled: true
-```
+Rewrite `webapp/values-dev.yaml` with the full file below — your Day 24 dev values plus the
+`verticalAutoscaler` on-switch at the bottom:
 
 ```bash
 cd ~/30-days-devops/day-12/gitops-webapp
+
+cat > webapp/values-dev.yaml << 'EOF'
+# Dev environment overrides — merged over webapp/values.yaml at sync time.
+# Only include keys that differ from the chart defaults.
+
+replicaCount: 3
+
+# Day 14: unprivileged nginx image — runs as UID 101, listens on 8080.
+image:
+  repository: nginxinc/nginx-unprivileged
+  tag: "1.27-alpine"
+  pullPolicy: IfNotPresent
+
+# ClusterIP so traffic enters through the NGINX Ingress, not a NodePort.
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8080
+
+resources:
+  requests:
+    cpu: 25m
+    memory: 32Mi
+  limits:
+    cpu: 50m
+    memory: 64Mi
+
+# Day 12: HPA on for the dev environment.
+autoscaling:
+  enabled: true
+
+# Day 16: PDB on for the dev environment.
+podDisruptionBudget:
+  enabled: true
+
+# Day 21: prefer even spread of webapp replicas across nodes.
+topologySpread:
+  enabled: true
+
+# Day 24: deliver app config via ConfigMap, with checksum-triggered rollouts.
+appConfig:
+  enabled: true
+  data:
+    APP_ENV: dev
+    LOG_LEVEL: trace
+    FEATURE_DARK_MODE: "true"
+
+# Day 26: recommendation-only right-sizing advice for the webapp.
+verticalAutoscaler:
+  enabled: true
+EOF
 
 helm template webapp ./webapp -f webapp/values-dev.yaml \
   | grep -A 10 'kind: VerticalPodAutoscaler'
