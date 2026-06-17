@@ -3,7 +3,7 @@ title: "Day 1: Git from Zero — Your First Commit, Branches, and the Two Workfl
 date: 2026-05-14
 categories: [Git]
 tags: [git, version-control, beginner, branching, gitflow, trunk-based-development, github]
-excerpt: "Never used Git? Start here. Install it, make your first commit, learn branches by doing, push to GitHub — then meet the two branching strategies every DevOps team chooses between."
+excerpt: "Git tutorial for beginners: install Git, make your first commit, and learn branching hands-on — then compare GitFlow vs trunk-based development, the two workflows real DevOps teams use."
 header:
   overlay_color: "#1a1a2e"
   overlay_filter: 0.6

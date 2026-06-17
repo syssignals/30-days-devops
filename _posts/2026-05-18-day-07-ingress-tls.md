@@ -3,7 +3,7 @@ title: "Day 7: Ingress and TLS — NGINX Ingress Controller, cert-manager, and H
 date: 2026-05-18
 categories: [Kubernetes]
 tags: [kubernetes, ingress, nginx, cert-manager, tls, https, helm, devops]
-excerpt: "Replace Day 6's NodePort with a real HTTPS entry point. Install the NGINX Ingress Controller and cert-manager into kind, write an Ingress with a TLS section, and watch cert-manager auto-issue a certificate from a self-signed ClusterIssuer."
+excerpt: "Kubernetes Ingress and TLS tutorial: install the NGINX Ingress Controller and cert-manager on kind, then serve your app over HTTPS with a certificate cert-manager auto-issues."
 header:
   overlay_color: "#0d1117"
   overlay_filter: 0.6

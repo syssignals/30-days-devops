@@ -3,7 +3,7 @@ title: "Day 6: Helm — Package Manager for Kubernetes. Charts, Templates, and M
 date: 2026-05-17
 categories: [Kubernetes]
 tags: [kubernetes, helm, charts, templates, values, releases, devops]
-excerpt: "Turn the raw YAML from Day 5 into a reusable Helm chart. Use values.yaml to configure the same chart for dev and prod, then install, upgrade, and rollback releases with single commands."
+excerpt: "Helm tutorial for Kubernetes: turn raw YAML into a reusable Helm chart, configure dev vs prod with values.yaml, then install, upgrade, and roll back releases with single commands."
 header:
   overlay_color: "#0d1117"
   overlay_filter: 0.6
